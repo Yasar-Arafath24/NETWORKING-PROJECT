@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ML artifacts
+*.pkl
+*.joblib
+*.onnx
+
+# Raw network captures
+*.pcap
+*.pcapng
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Dataset files
+datasets/raw/*
+datasets/processed/*
