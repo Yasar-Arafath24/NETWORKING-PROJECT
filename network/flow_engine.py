@@ -1,0 +1,160 @@
+from collections import defaultdict
+from pathlib import Path
+
+from scapy.all import IP, TCP, UDP, rdpcap
+
+
+def get_flow_key(packet):
+    """
+    Create a bidirectional flow key using:
+
+    Source IP
+    Destination IP
+    Source Port
+    Destination Port
+    Protocol
+    """
+
+    if not packet.haslayer(IP):
+        return None
+
+    src_ip = packet[IP].src
+    dst_ip = packet[IP].dst
+
+    if packet.haslayer(TCP):
+        protocol = "TCP"
+        src_port = packet[TCP].sport
+        dst_port = packet[TCP].dport
+
+    elif packet.haslayer(UDP):
+        protocol = "UDP"
+        src_port = packet[UDP].sport
+        dst_port = packet[UDP].dport
+
+    else:
+        protocol = str(packet[IP].proto)
+        src_port = 0
+        dst_port = 0
+
+    # Make the flow bidirectional.
+    # A → B and B → A belong to the same flow.
+    endpoint_1 = (src_ip, src_port)
+    endpoint_2 = (dst_ip, dst_port)
+
+    if endpoint_1 <= endpoint_2:
+        return (
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            protocol,
+        )
+
+    return (
+        dst_ip,
+        src_ip,
+        dst_port,
+        src_port,
+        protocol,
+    )
+
+
+def build_flows(packets):
+    """
+    Convert packets into bidirectional network flows.
+    """
+
+    flows = defaultdict(list)
+
+    for packet in packets:
+        key = get_flow_key(packet)
+
+        if key is not None:
+            flows[key].append(packet)
+
+    return flows
+
+
+def extract_flow_features(flows):
+    """
+    Extract basic behavioral features from each flow.
+    """
+
+    results = []
+
+    for flow_id, packets in flows.items():
+
+        first_packet = packets[0]
+        last_packet = packets[-1]
+
+        start_time = float(first_packet.time)
+        end_time = float(last_packet.time)
+
+        duration = max(end_time - start_time, 0.0)
+
+        total_bytes = sum(len(packet) for packet in packets)
+
+        packet_count = len(packets)
+
+        packet_rate = (
+            packet_count / duration
+            if duration > 0
+            else 0.0
+        )
+
+        byte_rate = (
+            total_bytes / duration
+            if duration > 0
+            else 0.0
+        )
+
+        packet_sizes = [
+            len(packet)
+            for packet in packets
+        ]
+
+        average_packet_size = (
+            sum(packet_sizes) / len(packet_sizes)
+            if packet_sizes
+            else 0.0
+        )
+
+        results.append(
+            {
+                "flow_id": len(results) + 1,
+                "src_ip": flow_id[0],
+                "dst_ip": flow_id[1],
+                "src_port": flow_id[2],
+                "dst_port": flow_id[3],
+                "protocol": flow_id[4],
+                "packet_count": packet_count,
+                "total_bytes": total_bytes,
+                "duration": round(duration, 6),
+                "packet_rate": round(packet_rate, 4),
+                "byte_rate": round(byte_rate, 4),
+                "average_packet_size": round(
+                    average_packet_size,
+                    4,
+                ),
+            }
+        )
+
+    return results
+
+
+def analyze_pcap(pcap_file: Path):
+    """
+    Read PCAP and generate flow-level features.
+    """
+
+    packets = rdpcap(str(pcap_file))
+
+    flows = build_flows(packets)
+
+    features = extract_flow_features(flows)
+
+    return {
+        "total_packets": len(packets),
+        "total_flows": len(flows),
+        "flows": features,
+    }
