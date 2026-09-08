@@ -1,0 +1,5 @@
+protocol,packet_count,total_bytes,duration,packet_rate,byte_rate,average_packet_size,min_packet_size,max_packet_size,forward_packets,backward_packets,forward_bytes,backward_bytes,source_file
+1,10,980,4.050974,2.4685,241.9171,98.0,98,98,5,5,490,490,e9c86e0827234f4aa0308e21461f83ed.pcapng
+TCP,33,9846,0.246165,134.0565,39997.5953,298.3636,66,2542,17,16,6683,3163,e9c86e0827234f4aa0308e21461f83ed.pcapng
+1,10,980,4.050974,2.4685,241.9171,98.0,98,98,5,5,490,490,phase1_test_capture.pcapng
+TCP,33,9846,0.246165,134.0565,39997.5953,298.3636,66,2542,17,16,6683,3163,phase1_test_capture.pcapng

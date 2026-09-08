@@ -2,10 +2,12 @@ from pathlib import Path
 
 from scapy.all import rdpcap
 
+from network.flow_engine import analyze_pcap as analyze_flow_pcap
+
 
 def analyze_pcap(file_path: Path) -> dict:
     """
-    Read a PCAP/PCAPNG file and return basic packet statistics.
+    Analyze a PCAP/PCAPNG file at both packet and flow level.
     """
 
     packets = rdpcap(str(file_path))
@@ -54,8 +56,19 @@ def analyze_pcap(file_path: Path) -> dict:
             }
         )
 
+    # Flow-level analysis
+    flow_analysis = analyze_flow_pcap(file_path)
+
     return {
         "total_packets": len(packets),
-        "protocol_counts": protocol_counts,
-        "sample_packets": packet_details,
+
+        "packet_analysis": {
+            "protocol_counts": protocol_counts,
+            "sample_packets": packet_details,
+        },
+
+        "flow_analysis": {
+            "total_flows": flow_analysis["total_flows"],
+            "flows": flow_analysis["flows"],
+        },
     }
