@@ -20,6 +20,7 @@ def main():
     print("=" * 60)
 
     print(f"PCAP: {PCAP_FILE}")
+    print()
 
     if not PCAP_FILE.exists():
         print("ERROR: PCAP file not found.")
@@ -27,28 +28,56 @@ def main():
 
     result = analyze_pcap(PCAP_FILE)
 
-    print()
     print(f"Total packets : {result['total_packets']}")
     print(f"Total flows   : {result['total_flows']}")
-
     print()
-    print("First 10 flows:")
-    print("-" * 60)
 
     for flow in result["flows"][:10]:
 
+        print("-" * 60)
+
         print(
+            f"Flow {flow['flow_id']}: "
             f"{flow['src_ip']}:{flow['src_port']} "
-            f"→ "
-            f"{flow['dst_ip']}:{flow['dst_port']} "
-            f"| {flow['protocol']} "
-            f"| packets={flow['packet_count']} "
-            f"| bytes={flow['total_bytes']} "
-            f"| duration={flow['duration']}s"
+            f"-> "
+            f"{flow['dst_ip']}:{flow['dst_port']}"
+        )
+
+        print(f"Protocol           : {flow['protocol']}")
+        print(f"Packets            : {flow['packet_count']}")
+        print(f"Total bytes        : {flow['total_bytes']}")
+        print(f"Duration           : {flow['duration']}")
+        print(f"Packet rate        : {flow['packet_rate']}")
+        print(f"Byte rate          : {flow['byte_rate']}")
+        print(
+            f"Average packet     : "
+            f"{flow['average_packet_size']}"
+        )
+
+        print(
+            f"Forward packets    : "
+            f"{flow['forward_packets']}"
+        )
+
+        print(
+            f"Backward packets   : "
+            f"{flow['backward_packets']}"
+        )
+
+        print(
+            f"Forward bytes      : "
+            f"{flow['forward_bytes']}"
+        )
+
+        print(
+            f"Backward bytes     : "
+            f"{flow['backward_bytes']}"
         )
 
     print()
+    print("=" * 60)
     print("Flow Engine: SUCCESS")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
