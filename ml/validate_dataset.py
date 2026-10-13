@@ -3,7 +3,13 @@
 
 from pathlib import Path
 
-import pandas as pd
+# pyright: reportMissingModuleSource=false
+try:
+    import pandas as pd
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "pandas is required. Install the project dependencies before running this script."
+    ) from exc
 
 
 DATASET = (

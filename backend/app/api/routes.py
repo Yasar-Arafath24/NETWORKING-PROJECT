@@ -1,116 +1,90 @@
-from pathlib import Path
-import shutil
-import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from datetime import datetime, timezone
 
-from network.flow_engine import analyze_pcap
-
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1", tags=["NetSentry"])
 
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-UPLOAD_DIR = BASE_DIR / "datasets" / "raw"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# -----------------------------
+# Request model for prediction
+# -----------------------------
+class TrafficFeatures(BaseModel):
+    packet_count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    duration: float = Field(ge=0)
+    packet_rate: float = Field(ge=0)
+    byte_rate: float = Field(ge=0)
+    average_packet_size: float = Field(ge=0)
+    min_packet_size: int = Field(ge=0)
+    max_packet_size: int = Field(ge=0)
+    forward_packets: int = Field(ge=0)
+    backward_packets: int = Field(ge=0)
+    forward_bytes: int = Field(ge=0)
+    backward_bytes: int = Field(ge=0)
 
 
+# -----------------------------
+# Health check
+# -----------------------------
 @router.get("/health")
 def health_check():
     return {
         "status": "healthy",
-        "service": "NetSentry AI",
-        "version": "0.1.0",
+        "service": "NetSentry AI Backend",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
+# -----------------------------
+# System information
+# -----------------------------
 @router.get("/system/info")
 def system_info():
     return {
-        "name": "NetSentry AI",
-        "version": "0.1.0",
-        "description": "Privacy-Preserving Intelligent Network Traffic Classification & Adaptive Threat Defense",
-        "components": [
-            "FastAPI",
-            "Scapy",
-            "Flow Engine",
-            "ML Traffic Classifier",
-        ],
+        "project": "NetSentry AI",
+        "backend": "FastAPI",
+        "phase": "Backend Foundation",
+        "status": "development",
     }
 
 
-@router.post("/pcap/analyze")
-async def upload_and_analyze_pcap(file: UploadFile = File(...)):
-    """
-    Upload and analyze a PCAP/PCAPNG file.
-    """
-
-    if not file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="No filename provided",
-        )
-
-    extension = Path(file.filename).suffix.lower()
-
-    if extension not in [".pcap", ".pcapng"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Only .pcap and .pcapng files are supported",
-        )
-
-    stored_name = f"{uuid.uuid4().hex}{extension}"
-    output_file = UPLOAD_DIR / stored_name
-
+# -----------------------------
+# Traffic prediction
+# -----------------------------
+@router.post("/predict")
+def predict_traffic(features: TrafficFeatures):
     try:
-        with output_file.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Import inside the endpoint so the API can start even if
+        # the prediction service is not configured yet.
+        from backend.app.services.prediction_service import predict
 
-        result = analyze_pcap(str(output_file))
-
-        # analyze_pcap() returns a dictionary of flow analysis results,
-        # but stay tolerant of a plain list of flows.
-        if isinstance(result, dict):
-            flows = result.get("flows", [])
-        elif isinstance(result, list):
-            flows = result
-        else:
-            flows = []
-
-        protocol_counts = {}
-
-        for flow in flows:
-            if not isinstance(flow, dict):
-                continue
-
-            protocol = flow.get("protocol", "OTHER")
-
-            if protocol not in ["TCP", "UDP", "ICMP"]:
-                protocol = "OTHER"
-
-            protocol_counts[protocol] = (
-                protocol_counts.get(protocol, 0) + 1
-            )
+        result = predict(features.model_dump())
 
         return {
             "status": "success",
-            "filename": file.filename,
-            "stored_as": stored_name,
-            "analysis": {
-                "total_flows": len(flows),
-                "protocol_counts": protocol_counts,
-                "flows": flows,
-            },
+            "prediction": result,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    except Exception as exc:
-        if output_file.exists():
-            output_file.unlink()
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Prediction service is not configured. "
+                "Check backend/app/services/prediction_service.py."
+            ),
+        ) from exc
 
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Trained model files are missing. Train the traffic classifier first.",
+        ) from exc
+
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"PCAP analysis failed: {str(exc)}",
-        )
-
-    finally:
-        await file.close()
+            detail=f"Traffic prediction failed: {str(exc)}",
+        ) from exc
