@@ -40,8 +40,9 @@ FEATURE_COLUMNS = [
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    pcap_files = list(RAW_DIR.glob("*.pcap")) + list(
-        RAW_DIR.glob("*.pcapng")
+    pcap_files = sorted(
+        list(RAW_DIR.rglob("*.pcap"))
+        + list(RAW_DIR.rglob("*.pcapng"))
     )
 
     if not pcap_files:
