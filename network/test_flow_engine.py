@@ -5,12 +5,23 @@ from flow_engine import analyze_pcap
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-PCAP_FILE = (
-    PROJECT_ROOT
-    / "datasets"
-    / "raw"
-    / "phase1_test_capture.pcapng"
-)
+# The sample capture may live directly in datasets/raw or in a subfolder.
+CAPTURE_NAME = "phase1_test_capture.pcapng"
+CAPTURE_DIRS = [
+    PROJECT_ROOT / "datasets" / "raw",
+    PROJECT_ROOT / "datasets" / "raw" / "normal",
+]
+
+
+def find_capture() -> Path:
+    for directory in CAPTURE_DIRS:
+        candidate = directory / CAPTURE_NAME
+        if candidate.exists():
+            return candidate
+    return CAPTURE_DIRS[0] / CAPTURE_NAME
+
+
+PCAP_FILE = find_capture()
 
 
 def main():

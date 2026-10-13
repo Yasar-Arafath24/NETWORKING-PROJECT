@@ -68,8 +68,14 @@ async def upload_and_analyze_pcap(file: UploadFile = File(...)):
 
         result = analyze_pcap(str(output_file))
 
-        # analyze_pcap() returns a list of flow dictionaries
-        flows = result if isinstance(result, list) else []
+        # analyze_pcap() returns a dictionary of flow analysis results,
+        # but stay tolerant of a plain list of flows.
+        if isinstance(result, dict):
+            flows = result.get("flows", [])
+        elif isinstance(result, list):
+            flows = result
+        else:
+            flows = []
 
         protocol_counts = {}
 
