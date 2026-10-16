@@ -1,23 +1,16 @@
+
 import pandas as pd
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 INPUT_FILE = (
-    PROJECT_ROOT
-    / "datasets"
-    / "processed"
-    / "flow_features.csv"
+    PROJECT_ROOT / "datasets" / "processed" / "flow_features.csv"
 )
 
 OUTPUT_FILE = (
-    PROJECT_ROOT
-    / "datasets"
-    / "processed"
-    / "ml_ready_flows.csv"
+    PROJECT_ROOT / "datasets" / "processed" / "ml_ready_flows.csv"
 )
-
 
 FEATURE_COLUMNS = [
     "protocol",
@@ -37,86 +30,85 @@ FEATURE_COLUMNS = [
 
 
 def normalize_protocol(value):
-    """
-    Convert protocol representations into consistent names.
-    """
+    value = str(value).strip().upper()
 
-    value = str(value).upper()
-
-    if value == "1":
-        return "ICMP"
-
-    if value == "6":
-        return "TCP"
-
-    if value == "17":
-        return "UDP"
-
-    return value
+    return {
+        "1": "ICMP",
+        "6": "TCP",
+        "17": "UDP",
+    }.get(value, value)
 
 
 def main():
-
     print("=" * 60)
     print("NetSentry AI - Dataset Preparation")
     print("=" * 60)
 
     if not INPUT_FILE.exists():
-        print(f"ERROR: Dataset not found: {INPUT_FILE}")
-        return
+        raise FileNotFoundError(
+            f"Dataset not found: {INPUT_FILE}"
+        )
 
-    dataframe = pd.read_csv(INPUT_FILE)
+    df = pd.read_csv(INPUT_FILE)
 
-    print(f"Original rows: {len(dataframe)}")
+    print(f"Original rows: {len(df)}")
 
-    # Normalize protocol values
-    dataframe["protocol"] = dataframe["protocol"].apply(
-        normalize_protocol
-    )
-
-    # Remove duplicate flow records
-    dataframe = dataframe.drop_duplicates(
-        subset=FEATURE_COLUMNS
-    ).reset_index(drop=True)
-
-    print(f"Rows after deduplication: {len(dataframe)}")
-
-    # Check required columns
+    # Validate the schema before accessing feature columns.
     missing_columns = [
-        column
-        for column in FEATURE_COLUMNS
-        if column not in dataframe.columns
+        col for col in FEATURE_COLUMNS if col not in df.columns
     ]
 
     if missing_columns:
-        print("ERROR: Missing columns:")
-        for column in missing_columns:
-            print(f"  - {column}")
-        return
+        raise ValueError(
+            f"Missing required columns: {missing_columns}"
+        )
 
-    # Check missing values
-    missing_values = dataframe[FEATURE_COLUMNS].isnull().sum()
+    if "source_file" in df.columns:
+        print("\nFlows by source file:")
+        print(df.groupby("source_file").size())
 
-    print()
-    print("Missing values:")
-    print(missing_values)
+    # Normalize protocol labels.
+    df["protocol"] = df["protocol"].apply(normalize_protocol)
 
-    # Save clean dataset
-    dataframe.to_csv(
-        OUTPUT_FILE,
-        index=False,
+    # Convert numeric features and mark invalid values as missing.
+    numeric_columns = [
+        col for col in FEATURE_COLUMNS if col != "protocol"
+    ]
+
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Remove records with missing or invalid feature values.
+    before_cleaning = len(df)
+    df = df.dropna(subset=FEATURE_COLUMNS).copy()
+
+    print(f"Rows removed for invalid/missing features: "
+          f"{before_cleaning - len(df)}")
+
+    # Report repeated feature vectors; do not silently remove them.
+    duplicate_mask = df.duplicated(
+        subset=FEATURE_COLUMNS,
+        keep=False,
     )
 
-    print()
-    print("Protocol distribution:")
-    print(dataframe["protocol"].value_counts())
+    print(
+        "Rows belonging to repeated feature vectors: "
+        f"{int(duplicate_mask.sum())}"
+    )
 
-    print()
-    print(f"Output: {OUTPUT_FILE}")
-    print(f"Final dataset shape: {dataframe.shape}")
+    # Preserve source_file and other available metadata.
+    # Investigate repeated records before deciding whether to remove them.
+    df = df.reset_index(drop=True)
 
-    print()
-    print("Dataset preparation: SUCCESS")
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
+
+    print("\nProtocol distribution:")
+    print(df["protocol"].value_counts())
+
+    print(f"\nOutput: {OUTPUT_FILE}")
+    print(f"Final dataset shape: {df.shape}")
+    print("\nDataset preparation: SUCCESS")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
+
 import sys
 from pathlib import Path
 
 
+# Locate the project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
@@ -9,90 +11,84 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from network.flow_engine import analyze_pcap  # noqa: E402
 
-# The sample capture may live directly in datasets/raw or in a subfolder.
-CAPTURE_NAME = "phase1_test_capture.pcapng"
-CAPTURE_DIRS = [
-    PROJECT_ROOT / "datasets" / "raw",
-    PROJECT_ROOT / "datasets" / "raw" / "normal",
-]
+
+# Find any available PCAP or PCAPNG file
+RAW_DIR = PROJECT_ROOT / "datasets" / "raw"
 
 
 def find_capture() -> Path:
-    for directory in CAPTURE_DIRS:
-        candidate = directory / CAPTURE_NAME
-        if candidate.exists():
-            return candidate
-    return CAPTURE_DIRS[0] / CAPTURE_NAME
+    captures = sorted(
+        path
+        for path in RAW_DIR.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".pcap", ".pcapng"}
+    )
 
+    if not captures:
+        raise FileNotFoundError(
+            f"No .pcap or .pcapng files found in: {RAW_DIR}"
+        )
 
-PCAP_FILE = find_capture()
+    return captures[0]
 
 
 def main():
-
     print("=" * 60)
     print("NetSentry AI - Flow Engine Test")
     print("=" * 60)
 
-    print(f"PCAP: {PCAP_FILE}")
+    try:
+        pcap_file = find_capture()
+    except FileNotFoundError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1) from exc
+
+    print(f"PCAP: {pcap_file}")
     print()
 
-    if not PCAP_FILE.exists():
-        print("ERROR: PCAP file not found.")
-        return
+    try:
+        result = analyze_pcap(pcap_file)
 
-    result = analyze_pcap(PCAP_FILE)
+        print(f"Total packets : {result['total_packets']}")
+        print(f"Total flows   : {result['total_flows']}")
+        print()
 
-    print(f"Total packets : {result['total_packets']}")
-    print(f"Total flows   : {result['total_flows']}")
-    print()
+        for flow in result.get("flows", [])[:10]:
+            print("-" * 60)
 
-    for flow in result["flows"][:10]:
+            print(
+                f"Flow {flow.get('flow_id', 'N/A')}: "
+                f"{flow.get('src_ip', 'N/A')}:"
+                f"{flow.get('src_port', 'N/A')} -> "
+                f"{flow.get('dst_ip', 'N/A')}:"
+                f"{flow.get('dst_port', 'N/A')}"
+            )
 
-        print("-" * 60)
+            fields = [
+                ("Protocol", "protocol"),
+                ("Packets", "packet_count"),
+                ("Total bytes", "total_bytes"),
+                ("Duration", "duration"),
+                ("Packet rate", "packet_rate"),
+                ("Byte rate", "byte_rate"),
+                ("Average packet size", "average_packet_size"),
+                ("Forward packets", "forward_packets"),
+                ("Backward packets", "backward_packets"),
+                ("Forward bytes", "forward_bytes"),
+                ("Backward bytes", "backward_bytes"),
+            ]
 
-        print(
-            f"Flow {flow['flow_id']}: "
-            f"{flow['src_ip']}:{flow['src_port']} "
-            f"-> "
-            f"{flow['dst_ip']}:{flow['dst_port']}"
-        )
+            for label, key in fields:
+                print(f"{label:<22}: {flow.get(key, 'N/A')}")
 
-        print(f"Protocol           : {flow['protocol']}")
-        print(f"Packets            : {flow['packet_count']}")
-        print(f"Total bytes        : {flow['total_bytes']}")
-        print(f"Duration           : {flow['duration']}")
-        print(f"Packet rate        : {flow['packet_rate']}")
-        print(f"Byte rate          : {flow['byte_rate']}")
-        print(
-            f"Average packet     : "
-            f"{flow['average_packet_size']}"
-        )
+        print()
+        print("=" * 60)
+        print("Flow Engine: SUCCESS")
+        print("=" * 60)
 
-        print(
-            f"Forward packets    : "
-            f"{flow['forward_packets']}"
-        )
-
-        print(
-            f"Backward packets   : "
-            f"{flow['backward_packets']}"
-        )
-
-        print(
-            f"Forward bytes      : "
-            f"{flow['forward_bytes']}"
-        )
-
-        print(
-            f"Backward bytes     : "
-            f"{flow['backward_bytes']}"
-        )
-
-    print()
-    print("=" * 60)
-    print("Flow Engine: SUCCESS")
-    print("=" * 60)
+    except Exception as exc:
+        print(f"\nERROR: Flow analysis failed: {exc}")
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
