@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -38,7 +37,7 @@ def system_info():
     return {
         "project": "NetSentry AI",
         "backend": "FastAPI",
-        "phase": "PCAP Analysis and Anomaly Detection",
+        "phase": "PCAP Analysis, Anomaly Detection and Risk Assessment",
         "status": "development",
     }
 
@@ -55,7 +54,6 @@ def predict_traffic(features: TrafficFeatures):
             "prediction": result,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
     except ImportError as exc:
         raise HTTPException(
             status_code=503,
@@ -69,32 +67,85 @@ def predict_traffic(features: TrafficFeatures):
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Traffic prediction failed: {str(exc)}",
+            detail=f"Traffic prediction failed: {exc}",
         ) from exc
+
+
+def calculate_risk_assessment(
+    total_flows: int,
+    suspicious_flows: int,
+) -> dict:
+    """Calculate a provisional heuristic traffic risk indicator."""
+    if total_flows <= 0:
+        return {
+            "risk_level": "UNAVAILABLE",
+            "anomaly_rate_percent": 0.0,
+            "risk_indicator_score": 0,
+            "explanation": "No network flows were available for assessment.",
+            "assessment_type": "heuristic",
+            "validated_for_real_world_attacks": False,
+        }
+
+    anomaly_rate = round((suspicious_flows / total_flows) * 100, 2)
+
+    if anomaly_rate >= 30:
+        risk_level = "HIGH"
+        explanation = (
+            "At least 30% of analyzed flows were classified as "
+            "suspicious by the experimental anomaly detector. "
+            "This warrants further investigation, not a conclusion "
+            "that an attack has occurred."
+        )
+    elif anomaly_rate >= 10:
+        risk_level = "MEDIUM"
+        explanation = (
+            "At least 10% but less than 30% of analyzed flows were "
+            "classified as suspicious by the experimental detector."
+        )
+    else:
+        risk_level = "LOW"
+        explanation = (
+            "Fewer than 10% of analyzed flows were classified as "
+            "suspicious. This does not establish that the traffic "
+            "is safe."
+        )
+
+    return {
+        "risk_level": risk_level,
+        "anomaly_rate_percent": anomaly_rate,
+        "risk_indicator_score": round(anomaly_rate),
+        "explanation": explanation,
+        "assessment_type": "heuristic",
+        "validated_for_real_world_attacks": False,
+    }
 
 
 @router.post("/pcap/analyze")
 async def analyze_pcap_upload(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
-
     if not filename.endswith((".pcap", ".pcapng")):
+        await file.close()
         raise HTTPException(
             status_code=400,
             detail="Upload a .pcap or .pcapng file.",
         )
 
     temp_path = None
-
     try:
-        # Save the upload temporarily so Scapy can read it.
-        with NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as temp:
+        with NamedTemporaryFile(
+            delete=False,
+            suffix=Path(filename).suffix,
+        ) as temp:
             temp_path = Path(temp.name)
 
             while chunk := await file.read(1024 * 1024):
                 temp.write(chunk)
 
         if temp_path.stat().st_size == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is empty.",
+            )
 
         from backend.app.services.pcap_service import analyze_pcap
         from ml.anomaly_detector import predict_anomalies
@@ -105,23 +156,29 @@ async def analyze_pcap_upload(file: UploadFile = File(...)):
         if not flows:
             return {
                 "status": "success",
-                **analysis,
+                "total_packets": analysis["total_packets"],
+                "total_flows": analysis["total_flows"],
+                "flows_returned": 0,
+                "flows": [],
+                "risk_assessment": calculate_risk_assessment(0, 0),
                 "anomaly_detection": {
                     "status": "no_flows",
-                    "predictions": [],
+                    "model_note": (
+                        "No flows were available for anomaly detection."
+                    ),
                     "suspicious_flows": 0,
+                    "normal_flows": 0,
                 },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
         predictions = predict_anomalies(flows)
-
-        # Match predictions to flows using flow_index.
         indexed_predictions = {
-            item["flow_index"]: item for item in predictions
+            item["flow_index"]: item
+            for item in predictions
         }
-
         enriched_flows = []
+
         for index, flow in enumerate(flows):
             prediction = indexed_predictions.get(index, {})
             enriched_flows.append({
@@ -132,8 +189,19 @@ async def analyze_pcap_upload(file: UploadFile = File(...)):
             })
 
         suspicious_count = sum(
-            1 for flow in enriched_flows
-            if flow["label"] == "SUSPICIOUS"
+            flow["label"] == "SUSPICIOUS"
+            for flow in enriched_flows
+        )
+        normal_count = sum(
+            flow["label"] == "NORMAL"
+            for flow in enriched_flows
+        )
+        unavailable_count = (
+            len(enriched_flows) - suspicious_count - normal_count
+        )
+        risk_assessment = calculate_risk_assessment(
+            total_flows=len(enriched_flows),
+            suspicious_flows=suspicious_count,
         )
 
         return {
@@ -142,18 +210,28 @@ async def analyze_pcap_upload(file: UploadFile = File(...)):
             "total_flows": analysis["total_flows"],
             "flows_returned": len(enriched_flows),
             "flows": enriched_flows,
+            "traffic_summary": {
+                "total_flows_analyzed": len(enriched_flows),
+                "normal_flows": normal_count,
+                "suspicious_flows": suspicious_count,
+                "unavailable_predictions": unavailable_count,
+            },
+            "risk_assessment": risk_assessment,
             "anomaly_detection": {
-                "status": "completed",
+                "status": (
+                    "completed" if unavailable_count == 0 else "partial"
+                ),
                 "model_note": (
-                    "The current model was trained on synthetic demo data. "
-                    "Predictions are experimental, not validated security findings."
+                    "The current model was trained on synthetic demo "
+                    "data. Predictions are experimental and have not "
+                    "been validated as real-world security findings."
                 ),
                 "suspicious_flows": suspicious_count,
-                "normal_flows": len(enriched_flows) - suspicious_count,
+                "normal_flows": normal_count,
+                "unavailable_predictions": unavailable_count,
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
     except HTTPException:
         raise
     except FileNotFoundError as exc:
@@ -164,7 +242,7 @@ async def analyze_pcap_upload(file: UploadFile = File(...)):
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"PCAP analysis failed: {str(exc)}",
+            detail=f"PCAP analysis failed: {exc}",
         ) from exc
     finally:
         await file.close()

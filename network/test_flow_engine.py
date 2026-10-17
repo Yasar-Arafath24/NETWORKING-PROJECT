@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from network.create_test_pcap import ensure_test_capture
 from network.flow_engine import analyze_pcap  # noqa: E402
 
 
@@ -23,6 +24,15 @@ def find_capture() -> Path:
         if path.is_file()
         and path.suffix.lower() in {".pcap", ".pcapng"}
     )
+
+    if not captures:
+        ensure_test_capture()
+        captures = sorted(
+            path
+            for path in RAW_DIR.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".pcap", ".pcapng"}
+        )
 
     if not captures:
         raise FileNotFoundError(

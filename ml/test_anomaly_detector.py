@@ -1,5 +1,13 @@
 
-from anomaly_detector import predict_anomalies
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from ml.anomaly_detector import predict_anomalies  # noqa: E402
 
 sample_flow = {
     "packet_count": 10,

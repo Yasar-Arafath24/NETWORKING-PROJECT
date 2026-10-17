@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
     
 import pandas as pd
 
+from network.create_test_pcap import ensure_test_capture
 from network.flow_engine import analyze_pcap
 
 
@@ -39,6 +40,7 @@ FEATURE_COLUMNS = [
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_test_capture()
 
     pcap_files = sorted(
         list(RAW_DIR.rglob("*.pcap"))

@@ -87,3 +87,8 @@ class TrafficPredictionService:
 
 
 classifier = TrafficPredictionService()
+
+
+def predict(features: dict) -> dict:
+    """Predict the traffic class for one flow."""
+    return classifier.predict(features)

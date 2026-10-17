@@ -1,8 +1,14 @@
+import sys
 from pathlib import Path
-from scapy.all import rdpcap
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scapy.all import rdpcap
+
+from network.create_test_pcap import ensure_test_capture
 
 # The sample capture may live directly in datasets/raw or in a subfolder.
 CAPTURE_NAME = "phase1_test_capture.pcapng"
@@ -17,7 +23,13 @@ def find_capture() -> Path:
         candidate = directory / CAPTURE_NAME
         if candidate.exists():
             return candidate
-    return CAPTURE_DIRS[0] / CAPTURE_NAME
+
+    default_capture = ensure_test_capture()
+    for directory in CAPTURE_DIRS:
+        candidate = directory / CAPTURE_NAME
+        if candidate.exists():
+            return candidate
+    return default_capture
 
 
 PCAP_FILE = find_capture()
