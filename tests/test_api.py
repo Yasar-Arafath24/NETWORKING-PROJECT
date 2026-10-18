@@ -13,6 +13,23 @@ def test_health_check():
     assert response.json()["status"] == "healthy"
 
 
+def test_root_health_alias():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+def test_pcap_upload_alias_rejects_invalid_extension():
+    response = client.post(
+        "/api/v1/pcap/upload",
+        files={"file": ("README.md", b"invalid capture")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Upload a .pcap or .pcapng file."
+
+
 def test_system_info():
     response = client.get("/api/v1/system/info")
 
@@ -58,3 +75,38 @@ def test_missing_report_returns_404():
     )
 
     assert response.status_code == 404
+
+
+def test_live_flow_history_endpoint():
+    response = client.get(
+        "/api/v1/monitoring/history/flows",
+        params={"limit": 20},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert isinstance(data["flows"], list)
+
+
+def test_live_alert_history_endpoint():
+    response = client.get(
+        "/api/v1/monitoring/history/alerts",
+        params={"limit": 20},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert isinstance(data["alerts"], list)
+
+
+def test_live_detection_status_endpoint():
+    response = client.get(
+        "/api/v1/monitoring/live/detection-status",
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "detection" in data

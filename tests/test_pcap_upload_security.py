@@ -47,13 +47,30 @@ def test_rejects_empty_pcap():
 def test_accepts_real_pcap():
     from pathlib import Path
 
+    project_root = Path(__file__).resolve().parent.parent
+    raw_dir = project_root / "datasets" / "raw"
+
     candidates = [
-        Path("datasets/duplicate_backups/phase1_test_capture.pcapng"),
-        Path("datasets/raw/57c81bec8b6347529b80d4443fd8d97.pcapng"),
-        Path("datasets/duplicate_backups/e9c86e0827234f4aa0308e21461f83ed.pcapng"),
+        raw_dir / "phase1_test_capture.pcapng",
+        raw_dir / "netsentry_test.pcap",
+        project_root / "datasets" / "duplicate_backups" / "phase1_test_capture.pcapng",
+        raw_dir / "57c81bec8b6347529b80d4443fd8d97.pcapng",
+        project_root / "datasets" / "duplicate_backups" / "e9c86e0827234f4aa0308e21461f83ed.pcapng",
     ]
 
     pcap_path = next((path for path in candidates if path.is_file()), None)
+
+    # Fall back to any capture that ships under datasets/raw.
+    if pcap_path is None:
+        pcap_path = next(
+            (
+                path
+                for pattern in ("*.pcapng", "*.pcap")
+                for path in sorted(raw_dir.glob(pattern))
+            ),
+            None,
+        )
+
     assert pcap_path is not None, "No test PCAP file was found."
 
     with pcap_path.open("rb") as capture:
