@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.routes import router
+from backend.app.services.database import Base, engine
+from backend.app.models.analysis import AnalysisReport
 
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="NetSentry AI",
