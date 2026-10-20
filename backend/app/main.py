@@ -41,3 +41,10 @@ def root():
         "status": "running",
         "version": "0.1.0",
     }
+@app.get("/api/v1/health", tags=["Health"])
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "NetSentry AI API",
+        "version": "1.0.0",
+    }

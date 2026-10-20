@@ -1,152 +1,198 @@
 
-import { useState } from "react";
-import { Upload, FileText, X } from "lucide-react";
+import { useRef, useState } from "react";
+import { FileSearch, FileText, Upload, X, CheckCircle2 } from "lucide-react";
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 export default function PcapUpload({
   onUpload,
   uploading = false,
 }) {
-  const [selectedFile, setSelectedFile] = useState(null);
+  const inputRef = useRef(null);
+  const [file, setFile] = useState(null);
   const [error, setError] = useState("");
-  const [analysis, setAnalysis] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const [success, setSuccess] = useState(false);
 
-  function handleFileChange(event) {
-    const file = event.target.files?.[0];
-
+  function validateFile(selectedFile) {
     setError("");
-    setAnalysis(null);
-    setSelectedFile(null);
+    setSuccess(false);
 
-    if (!file) return;
+    if (!selectedFile) return;
 
-    const validExtension = /\.(pcap|pcapng)$/i.test(file.name);
+    const validExtension = /\.(pcap|pcapng)$/i.test(selectedFile.name);
 
     if (!validExtension) {
-      setError("Select a .pcap or .pcapng file.");
-      event.target.value = "";
+      setFile(null);
+      setError("Choose a .pcap or .pcapng file.");
       return;
     }
 
-    if (file.size === 0) {
-      setError("The selected file is empty.");
-      event.target.value = "";
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setFile(null);
+      setError("The file exceeds the 50 MB frontend limit.");
       return;
     }
 
-    setSelectedFile(file);
+    setFile(selectedFile);
   }
 
-  async function handleUpload() {
-    if (!selectedFile || uploading) return;
+  function handleFileChange(event) {
+    validateFile(event.target.files?.[0] ?? null);
+  }
 
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragging(false);
+    validateFile(event.dataTransfer.files?.[0] ?? null);
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
     setError("");
+    setSuccess(false);
+
+    if (!file) {
+      setError("Select a PCAP file before starting analysis.");
+      return;
+    }
 
     try {
-      const result = await onUpload(selectedFile);
-      setAnalysis(result);
-      setSelectedFile(null);
-
-      const input = document.getElementById("pcap-file-input");
-      if (input) input.value = "";
-    } catch (err) {
-      setError(
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Upload failed. Check the backend and try again."
-      );
+      await onUpload(file);
+      setSuccess(true);
+    } catch (uploadError) {
+      setError(uploadError.message || "PCAP analysis failed.");
     }
+  }
+
+  function removeFile() {
+    setFile(null);
+    setError("");
+    setSuccess(false);
+
+    if (inputRef.current) {
+      inputRef.current.value = "";
+    }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return `${bytes} bytes`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-6">
-      <div className="mb-5">
-        <h2 className="text-lg font-semibold text-slate-900">
-          PCAP Analysis
-        </h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Upload a network capture to begin analysis.
-        </p>
+    <section className="pcap-upload-panel">
+      <div className="pcap-heading">
+        <div>
+          <div className="eyebrow">PACKET INSPECTION</div>
+          <h2>PCAP Analysis</h2>
+          <p>Upload a network capture to inspect its traffic and flows.</p>
+        </div>
+
+        <div className="pcap-heading-icon">
+          <FileSearch size={22} />
+        </div>
       </div>
 
-      <label
-        htmlFor="pcap-file-input"
-        className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 px-5 py-10 text-center transition hover:border-blue-500 hover:bg-blue-50/40"
-      >
-        <Upload className="mb-3 h-8 w-8 text-blue-600" />
-
-        <span className="font-medium text-slate-800">
-          Choose a PCAP file
-        </span>
-
-        <span className="mt-1 text-sm text-slate-500">
-          .pcap or .pcapng
-        </span>
-
+      <form onSubmit={handleSubmit}>
         <input
-          id="pcap-file-input"
+          ref={inputRef}
+          className="pcap-hidden-input"
           type="file"
           accept=".pcap,.pcapng"
-          className="sr-only"
           onChange={handleFileChange}
           disabled={uploading}
+          aria-label="Choose PCAP file"
         />
-      </label>
 
-      {selectedFile && (
-        <div className="mt-4 flex items-center gap-3 rounded-lg bg-slate-50 p-3">
-          <FileText className="h-5 w-5 shrink-0 text-blue-600" />
-
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-slate-800">
-              {selectedFile.name}
-            </p>
-            <p className="text-xs text-slate-500">
-              {(selectedFile.size / 1024).toFixed(1)} KB
-            </p>
+        <div
+          className={`pcap-dropzone ${dragging ? "is-dragging" : ""}`}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+              setDragging(false);
+            }
+          }}
+          onDrop={handleDrop}
+        >
+          <div className="pcap-drop-icon">
+            <Upload size={24} />
           </div>
+
+          <h3>Drop your capture file here</h3>
+          <p>Supported formats: PCAP and PCAPNG</p>
 
           <button
             type="button"
-            aria-label="Remove selected file"
+            className="secondary-button"
+            onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            onClick={() => {
-              setSelectedFile(null);
-              const input = document.getElementById("pcap-file-input");
-              if (input) input.value = "";
-            }}
-            className="rounded-md p-2 text-slate-500 hover:bg-slate-200"
           >
-            <X className="h-4 w-4" />
+            Browse files
+          </button>
+
+          <span className="pcap-size-note">Maximum frontend size: 50 MB</span>
+        </div>
+
+        {file && (
+          <div className="pcap-selected-file">
+            <div className="pcap-file-icon">
+              <FileText size={21} />
+            </div>
+
+            <div className="pcap-file-info">
+              <strong title={file.name}>{file.name}</strong>
+              <span>{formatSize(file.size)}</span>
+            </div>
+
+            {!uploading && (
+              <button
+                type="button"
+                className="pcap-remove-button"
+                onClick={removeFile}
+                aria-label="Remove selected file"
+              >
+                <X size={18} />
+              </button>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div className="pcap-message pcap-error" role="alert">
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div className="pcap-message pcap-success" role="status">
+            <CheckCircle2 size={17} />
+            Analysis completed successfully.
+          </div>
+        )}
+
+        <div className="pcap-submit-row">
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={!file || uploading}
+          >
+            <Upload size={17} />
+            {uploading ? "Analyzing capture..." : "Upload and Analyze"}
           </button>
         </div>
-      )}
 
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-red-600">
-          {String(error)}
+        <p className="pcap-security-note">
+          File extension checks are not a security validation. The backend
+          must validate file contents, file size, and access permissions.
         </p>
-      )}
-
-      {analysis && (
-        <p role="status" className="mt-3 text-sm text-green-700">
-          Analysis complete: {analysis.total_packets} packets across{" "}
-          {analysis.total_flows} flows.
-        </p>
-      )}
-
-      <button
-        type="button"
-        onClick={handleUpload}
-        disabled={!selectedFile || uploading}
-        className="mt-5 w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {uploading ? "Uploading..." : "Upload and Analyze"}
-      </button>
-
-      <p className="mt-3 text-xs text-slate-500">
-        File extension checks are not a security validation.
-        The backend must validate file contents, size, and access permissions.
-      </p>
+      </form>
     </section>
   );
 }

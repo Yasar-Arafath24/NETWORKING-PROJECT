@@ -1,85 +1,114 @@
+
 from pathlib import Path
-
-from scapy.all import Ether, ICMP, IP, Raw, TCP, UDP, wrpcap
-
-ROOT = Path(__file__).resolve().parent
-RAW_DIR = ROOT / "datasets" / "raw"
+from scapy.all import Ether, IP, UDP, TCP, DNS, DNSQR, Raw, wrpcap, rdpcap
 
 
-def create_capture(output_path: Path | str) -> Path:
-    """Generate a small synthetic PCAP used by the smoke checks."""
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
+def create_test_pcap():
+    """Generate a small, valid synthetic PCAP for NetSentry AI testing."""
+
+    output_file = Path("datasets/processed/valid_test_capture.pcap")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     packets = []
 
-    for i in range(20):
-        src_ip = f"192.168.1.{10 + i}"
-        dst_ip = "192.168.1.100"
-        src_port = 40000 + i
-        dst_port = 80 if i % 2 == 0 else 443
+    # Packet 1: DNS query
+    packets.append(
+        Ether()
+        / IP(src="192.168.1.10", dst="8.8.8.8")
+        / UDP(sport=53000, dport=53)
+        / DNS(
+            rd=1,
+            id=1001,
+            qd=DNSQR(qname="example.com", qtype="A"),
+        )
+    )
 
-        request = (
-            Ether()
-            / IP(src=src_ip, dst=dst_ip)
-            / TCP(sport=src_port, dport=dst_port, flags="PA", seq=1)
-            / Raw(load=b"GET /test HTTP/1.1")
+    # Packet 2: DNS response
+    packets.append(
+        Ether()
+        / IP(src="8.8.8.8", dst="192.168.1.10")
+        / UDP(sport=53, dport=53000)
+        / DNS(
+            id=1001,
+            qr=1,
+            rd=1,
+            ra=1,
+            qd=DNSQR(qname="example.com", qtype="A"),
+            an=None,
+        )
+    )
+
+    # Packet 3: TCP SYN
+    packets.append(
+        Ether()
+        / IP(src="192.168.1.10", dst="192.168.1.20")
+        / TCP(sport=51000, dport=80, flags="S", seq=1000)
+    )
+
+    # Packet 4: TCP SYN-ACK
+    packets.append(
+        Ether()
+        / IP(src="192.168.1.20", dst="192.168.1.10")
+        / TCP(sport=80, dport=51000, flags="SA", seq=2000, ack=1001)
+    )
+
+    # Packet 5: Synthetic application payload
+    packets.append(
+        Ether()
+        / IP(src="192.168.1.10", dst="192.168.1.20")
+        / UDP(sport=52000, dport=52001)
+        / Raw(load=b"NetSentry AI synthetic test traffic")
+    )
+
+    # Packet 6: Response payload
+    packets.append(
+        Ether()
+        / IP(src="192.168.1.20", dst="192.168.1.10")
+        / UDP(sport=52001, dport=52000)
+        / Raw(load=b"Synthetic test response")
+    )
+
+    # Write a genuine PCAP file with a valid PCAP global header.
+    wrpcap(str(output_file), packets)
+
+    # Read it back to verify the file can be parsed.
+    verified_packets = rdpcap(str(output_file))
+
+    if len(verified_packets) != len(packets):
+        raise RuntimeError("PCAP verification failed: packet count mismatch.")
+
+    with output_file.open("rb") as file:
+        signature = file.read(4)
+
+    valid_signatures = {
+        bytes.fromhex("d4c3b2a1"),
+        bytes.fromhex("a1b2c3d4"),
+        bytes.fromhex("4d3cb2a1"),
+        bytes.fromhex("a1b23c4d"),
+    }
+
+    if signature not in valid_signatures:
+        raise RuntimeError(
+            f"Unexpected PCAP signature: {signature.hex()}"
         )
 
-        response = (
-            Ether()
-            / IP(src=dst_ip, dst=src_ip)
-            / TCP(sport=dst_port, dport=src_port, flags="PA", seq=1)
-            / Raw(load=b"HTTP/1.1 200 OK")
-        )
-
-        request.time = 1_700_000_000 + i * 2
-        response.time = 1_700_000_001 + i * 2
-
-        packets.extend([request, response])
-
-    for i in range(10):
-        packet = (
-            Ether()
-            / IP(src=f"192.168.1.{50 + i}", dst="192.168.1.100")
-            / UDP(sport=53000 + i, dport=53)
-            / Raw(load=f"dns-{i}".encode())
-        )
-        packet.time = 1_700_000_050 + i
-        packets.append(packet)
-
-    for i in range(10):
-        packet = (
-            Ether()
-            / IP(src=f"192.168.1.{70 + i}", dst="192.168.1.100")
-            / ICMP()
-            / Raw(load=b"test-ping")
-        )
-        packet.time = 1_700_000_100 + i
-        packets.append(packet)
-
-    wrpcap(str(output), packets)
-    return output
-
-
-def ensure_test_capture() -> Path:
-    """Create the sample captures used by the smoke tests if they are missing."""
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-
-    default_capture = RAW_DIR / "netsentry_test.pcap"
-    legacy_capture = RAW_DIR / "phase1_test_capture.pcapng"
-
-    if not default_capture.exists():
-        create_capture(default_capture)
-
-    if not legacy_capture.exists():
-        create_capture(legacy_capture)
-
-    return default_capture
+    print("=" * 55)
+    print("NetSentry AI - Test PCAP Generator")
+    print("=" * 55)
+    print(f"File: {output_file.resolve()}")
+    print(f"Packets: {len(verified_packets)}")
+    print(f"Size: {output_file.stat().st_size} bytes")
+    print(f"PCAP signature: {signature.hex()}")
+    print("Verification: PASSED")
+    print("=" * 55)
 
 
 if __name__ == "__main__":
-    output = ensure_test_capture()
-    print(f"Created: {output}")
-    print(f"Raw directory: {RAW_DIR}")
-    print("Note: This is synthetic test traffic, not real attack traffic.")
+    try:
+        create_test_pcap()
+    except ImportError:
+        print("Scapy is not installed.")
+        print("Install it with: python -m pip install scapy")
+    except Exception as error:
+        print(f"Failed to create test PCAP: {error}")
+        raise
