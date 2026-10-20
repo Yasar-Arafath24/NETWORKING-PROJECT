@@ -1,0 +1,7 @@
+fastapi==0.139.2
+joblib==1.5.3
+pandas==3.0.5
+python-multipart==0.0.32
+scapy==2.7.0
+SQLAlchemy==2.0.51
+uvicorn==0.51.0

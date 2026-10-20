@@ -25,4 +25,15 @@ export async function getAnalysisHistory() {
   return response.data;
 }
 
+export async function uploadPcap(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await api.post("/api/v1/pcap/analyze", formData, {
+    timeout: 120000,
+  });
+
+  return response.data;
+}
+
 export default api;

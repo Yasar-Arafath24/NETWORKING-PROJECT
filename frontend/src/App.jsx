@@ -1,5 +1,5 @@
-import ApiTest from "./services/ApiTest";
+import Dashboard from "./components/Dashboard";
 
 export default function App() {
-  return <ApiTest />;
+  return <Dashboard />;
 }

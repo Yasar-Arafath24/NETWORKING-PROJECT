@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Activity,
   ArrowDownRight,
@@ -10,7 +11,6 @@ import {
   Gauge,
   LayoutDashboard,
   Network,
-  Radio,
   Search,
   Settings,
   Shield,
@@ -28,6 +28,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import FlowResults from "./FlowResults";
+import PcapUpload from "./PcapUpload";
+import { uploadPcap } from "../services/api";
+
 
 const trafficData = [
   { time: "09:00", packets: 120, suspicious: 12 },
@@ -38,37 +42,6 @@ const trafficData = [
   { time: "09:50", packets: 310, suspicious: 35 },
   { time: "10:00", packets: 260, suspicious: 21 },
   { time: "10:10", packets: 350, suspicious: 42 },
-];
-
-const recentFlows = [
-  {
-    source: "192.168.1.105",
-    destination: "104.18.32.47",
-    protocol: "TCP",
-    packets: 248,
-    status: "Normal",
-  },
-  {
-    source: "192.168.1.112",
-    destination: "185.199.108.153",
-    protocol: "HTTPS",
-    packets: 124,
-    status: "Normal",
-  },
-  {
-    source: "10.0.0.24",
-    destination: "45.83.64.12",
-    protocol: "TCP",
-    packets: 876,
-    status: "Suspicious",
-  },
-  {
-    source: "192.168.1.118",
-    destination: "8.8.8.8",
-    protocol: "UDP",
-    packets: 64,
-    status: "Normal",
-  },
 ];
 
 const navigation = [
@@ -121,6 +94,21 @@ function MetricCard({
 }
 
 export default function Dashboard() {
+  const [uploadingPcap, setUploadingPcap] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+
+  async function handlePcapUpload(file) {
+    setUploadingPcap(true);
+
+    try {
+      const result = await uploadPcap(file);
+      setAnalysis(result);
+      return result;
+    } finally {
+      setUploadingPcap(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -213,7 +201,15 @@ export default function Dashboard() {
               </p>
             </div>
 
-            <button className="primary-button">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() =>
+                document
+                  .getElementById("pcap-analysis")
+                  ?.scrollIntoView({ behavior: "smooth" })
+              }
+            >
               <Upload size={17} />
               Analyze PCAP
             </button>
@@ -230,6 +226,13 @@ export default function Dashboard() {
               </span>
             </div>
             <span className="preview-badge">UI PREVIEW</span>
+          </section>
+
+          <section id="pcap-analysis" className="mt-6">
+            <PcapUpload
+              onUpload={handlePcapUpload}
+              uploading={uploadingPcap}
+            />
           </section>
 
           <section className="metrics-grid">
@@ -391,62 +394,7 @@ export default function Dashboard() {
             </article>
           </section>
 
-          <section className="panel flows-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Recent network flows</h2>
-                <p>Illustrative rows · Replace with actual analysis results</p>
-              </div>
-              <button className="secondary-button">
-                View analysis history
-              </button>
-            </div>
-
-            <div className="table-scroll">
-              <table className="flows-table">
-                <thead>
-                  <tr>
-                    <th>Source IP</th>
-                    <th>Destination IP</th>
-                    <th>Protocol</th>
-                    <th>Packets</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentFlows.map((flow) => (
-                    <tr key={`${flow.source}-${flow.destination}`}>
-                      <td className="ip-address">{flow.source}</td>
-                      <td className="ip-address">{flow.destination}</td>
-                      <td>
-                        <span className="protocol-badge">{flow.protocol}</span>
-                      </td>
-                      <td>{flow.packets.toLocaleString()}</td>
-                      <td>
-                        <span
-                          className={`flow-status ${
-                            flow.status === "Suspicious"
-                              ? "flow-suspicious"
-                              : "flow-normal"
-                          }`}
-                        >
-                          {flow.status === "Suspicious" && (
-                            <ShieldAlert size={13} />
-                          )}
-                          {flow.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="table-footer">
-              <span>Sample data for layout demonstration only</span>
-              <button className="text-button">Explore flows →</button>
-            </div>
-          </section>
+          <FlowResults flows={analysis?.flows ?? []} />
 
           <footer className="dashboard-footer">
             <span>NetSentry AI · Network traffic analysis</span>
