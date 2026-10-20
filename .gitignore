@@ -3,7 +3,7 @@
 # ==========================================
 
 # ------------------------------------------
-# Python virtual environment
+# Python virtual environments
 # ------------------------------------------
 venv/
 .venv/
@@ -11,7 +11,7 @@ env/
 ENV/
 
 # ------------------------------------------
-# Python cache / compiled files
+# Python cache and compiled files
 # ------------------------------------------
 __pycache__/
 *.py[cod]
@@ -20,15 +20,18 @@ __pycache__/
 *.pyd
 
 # ------------------------------------------
-# Python tooling
+# Python testing and tooling
 # ------------------------------------------
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
 .nox/
+.pytype/
+.hypothesis/
 
 # ------------------------------------------
 # Jupyter
@@ -36,14 +39,21 @@ htmlcov/
 .ipynb_checkpoints/
 
 # ------------------------------------------
-# Environment / secrets
+# Environment variables and secrets
 # ------------------------------------------
 .env
 .env.*
 !.env.example
+!.env.*.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
 
 # ------------------------------------------
-# PCAP / network captures
+# Network captures
 # ------------------------------------------
 *.pcap
 *.pcapng
@@ -60,7 +70,7 @@ datasets/processed/*
 !datasets/processed/.gitkeep
 
 # ------------------------------------------
-# Machine Learning generated files
+# Generated machine-learning artifacts
 # ------------------------------------------
 *.pkl
 *.pickle
@@ -69,6 +79,9 @@ datasets/processed/*
 *.h5
 *.pt
 *.pth
+
+# Keep model directory if needed
+!models/.gitkeep
 
 # ------------------------------------------
 # Logs
@@ -85,55 +98,62 @@ logs/
 *.swo
 *.bak
 *.orig
+*~
 
 # ------------------------------------------
-# Build / distribution
+# Python build and distribution
 # ------------------------------------------
 build/
 dist/
 *.egg-info/
+wheels/
+pip-wheel-metadata/
 
 # ------------------------------------------
-# VS Code
-# ------------------------------------------
-.vscode/
-!.vscode/settings.example.json
-
-# ------------------------------------------
-# PyCharm / IntelliJ
-# ------------------------------------------
-.idea/
-
-# ------------------------------------------
-# OS generated files
-# ------------------------------------------
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ------------------------------------------
-# Node / frontend dependencies
+# Node.js and frontend dependencies
 # ------------------------------------------
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
 # Frontend build output
 frontend/dist/
 frontend/build/
 frontend/.next/
 frontend/.vite/
+frontend/coverage/
+
+# Local package manager files
+.npm/
+.eslintcache
 
 # ------------------------------------------
-# Database files
+# IDEs and editors
+# ------------------------------------------
+.vscode/
+!.vscode/settings.example.json
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# ------------------------------------------
+# Operating system files
+# ------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------------------------------------------
+# Databases
 # ------------------------------------------
 *.db
 *.sqlite
 *.sqlite3
 
 # ------------------------------------------
-# Generated reports / exports
+# Generated reports and exports
 # ------------------------------------------
 reports/generated/
 exports/
@@ -142,3 +162,10 @@ exports/
 # Temporary uploads
 # ------------------------------------------
 uploads/
+
+# ------------------------------------------
+# Local configuration and runtime files
+# ------------------------------------------
+*.pid
+*.seed
+*.stackdump
