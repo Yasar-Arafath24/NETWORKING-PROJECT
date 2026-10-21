@@ -1,5 +1,5 @@
 
-"""Load the trained anomaly pipeline and score network flows."""
+"""Load the trained anomaly model and score network flows."""
 
 from pathlib import Path
 
@@ -12,23 +12,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_ROOT / "models" / "anomaly_detector.joblib"
 
 DEFAULT_FEATURE_COLUMNS = [
-    "duration",
     "packet_count",
     "total_bytes",
-    "forward_packets",
-    "backward_packets",
-    "forward_bytes",
-    "backward_bytes",
+    "duration",
     "packet_rate",
     "byte_rate",
     "average_packet_size",
     "min_packet_size",
     "max_packet_size",
+    "forward_packets",
+    "backward_packets",
+    "forward_bytes",
+    "backward_bytes",
 ]
 
 
 def load_model_data() -> dict:
-    """Load and validate the saved model bundle."""
+    """Load and validate the saved anomaly model bundle."""
     if not MODEL_PATH.is_file():
         raise FileNotFoundError(
             f"Anomaly model not found: {MODEL_PATH}"
@@ -41,17 +41,17 @@ def load_model_data() -> dict:
             "Invalid model bundle: expected a dictionary."
         )
 
-    if "pipeline" not in saved:
-        raise ValueError(
-            "Invalid model bundle: missing 'pipeline' key. "
-            "Retrain the anomaly model."
-        )
+    # Support both bundle formats used by this project.
+    pipeline = saved.get("model", saved.get("pipeline"))
 
-    pipeline = saved["pipeline"]
+    if pipeline is None:
+        raise ValueError(
+            "Invalid model bundle: missing 'model' or 'pipeline'."
+        )
 
     if not hasattr(pipeline, "predict"):
         raise ValueError(
-            "The saved pipeline does not support predict()."
+            "The saved anomaly model does not support predict()."
         )
 
     columns = saved.get(
@@ -61,7 +61,7 @@ def load_model_data() -> dict:
 
     if not isinstance(columns, (list, tuple)) or not columns:
         raise ValueError(
-            "The model's feature_columns configuration is invalid."
+            "The model feature_columns configuration is invalid."
         )
 
     return {
@@ -71,16 +71,7 @@ def load_model_data() -> dict:
 
 
 def predict_anomalies(flows: list[dict]) -> list[dict]:
-    """
-    Return predictions in the format expected by the PCAP API.
-
-    Each result contains:
-      - flow_index
-      - anomaly: bool
-      - label: NORMAL or SUSPICIOUS
-      - anomaly_score
-      - anomaly_prediction
-    """
+    """Return NORMAL/SUSPICIOUS predictions for network flows."""
     if not flows:
         return []
 
@@ -90,7 +81,6 @@ def predict_anomalies(flows: list[dict]) -> list[dict]:
 
     frame = pd.DataFrame(flows)
 
-    # Use exactly the feature columns used during training.
     for column in feature_columns:
         if column not in frame.columns:
             frame[column] = np.nan
@@ -105,7 +95,6 @@ def predict_anomalies(flows: list[dict]) -> list[dict]:
         np.nan,
     )
 
-    # Do not silently invent feature values if the input is unusable.
     if features.isna().all(axis=1).any():
         bad_rows = features.index[
             features.isna().all(axis=1)
@@ -118,41 +107,38 @@ def predict_anomalies(flows: list[dict]) -> list[dict]:
 
     predictions = np.asarray(pipeline.predict(features))
 
-    if hasattr(pipeline, "decision_function"):
-        raw_scores = np.asarray(
-            pipeline.decision_function(features)
-        ).reshape(-1)
-        # IsolationForest: lower decision values are more anomalous.
-        anomaly_scores = -raw_scores
-    elif hasattr(pipeline, "score_samples"):
-        raw_scores = np.asarray(
-            pipeline.score_samples(features)
-        ).reshape(-1)
-        anomaly_scores = -raw_scores
-    else:
-        # A prediction can still be returned, but no calibrated
-        # anomaly score is available from this estimator.
-        anomaly_scores = np.full(len(flows), np.nan)
-
     if len(predictions) != len(flows):
         raise ValueError(
             "The model returned an unexpected number of predictions."
         )
 
+    if hasattr(pipeline, "decision_function"):
+        raw_scores = np.asarray(
+            pipeline.decision_function(features)
+        ).reshape(-1)
+        scores = -raw_scores
+    elif hasattr(pipeline, "score_samples"):
+        raw_scores = np.asarray(
+            pipeline.score_samples(features)
+        ).reshape(-1)
+        scores = -raw_scores
+    else:
+        scores = np.full(len(flows), np.nan)
+
     results = []
 
     for index, (flow, prediction, score) in enumerate(
-        zip(flows, predictions, anomaly_scores)
+        zip(flows, predictions, scores)
     ):
-        # IsolationForest convention: -1 = anomaly, 1 = normal.
         is_anomaly = int(prediction) == -1
-        label = "SUSPICIOUS" if is_anomaly else "NORMAL"
 
         results.append({
             **flow,
             "flow_index": index,
             "anomaly": is_anomaly,
-            "label": label,
+            "label": (
+                "SUSPICIOUS" if is_anomaly else "NORMAL"
+            ),
             "anomaly_prediction": (
                 "ANOMALY" if is_anomaly else "NORMAL"
             ),

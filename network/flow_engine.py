@@ -1,4 +1,3 @@
-
 """Extract bidirectional network flows from PCAP and PCAPNG files."""
 
 from collections import defaultdict
@@ -8,7 +7,7 @@ from scapy.all import IP, IPv6, TCP, UDP, ICMP, PcapReader
 
 
 def _packet_details(packet):
-    """Return IPs, ports, protocol, and packet size for supported packets."""
+    """Extract supported IP packet metadata without reading payload contents."""
     if IP in packet:
         ip_layer = packet[IP]
         src_ip = ip_layer.src
@@ -35,7 +34,6 @@ def _packet_details(packet):
         src_port = 0
         dst_port = 0
     else:
-        # Ignore other IP protocols in this initial flow engine.
         return None
 
     return {
@@ -49,17 +47,21 @@ def _packet_details(packet):
     }
 
 
+def _endpoint_key(ip, port):
+    """Return a stable endpoint key for bidirectional grouping."""
+    return str(ip), int(port)
+
+
 def analyze_pcap(file_path: Path | str) -> dict:
-    """Read a capture and return packet totals and bidirectional flow statistics."""
+    """Analyze a capture and return packet totals and unique bidirectional flows."""
     path = Path(file_path)
 
     if not path.is_file():
         raise FileNotFoundError(f"PCAP file not found: {path}")
 
-    # Each key is independent of packet direction, so replies join the same flow.
     flow_data = {}
-
     total_packets = 0
+    ignored_packets = 0
 
     with PcapReader(str(path)) as reader:
         for packet in reader:
@@ -67,22 +69,17 @@ def analyze_pcap(file_path: Path | str) -> dict:
             details = _packet_details(packet)
 
             if details is None:
+                ignored_packets += 1
                 continue
 
-            src = (
-                details["src_ip"],
-                details["src_port"],
+            src = _endpoint_key(
+                details["src_ip"], details["src_port"]
             )
-            dst = (
-                details["dst_ip"],
-                details["dst_port"],
+            dst = _endpoint_key(
+                details["dst_ip"], details["dst_port"]
             )
 
-            # Canonical endpoint ordering groups both traffic directions.
-            if src <= dst:
-                endpoint_a, endpoint_b = src, dst
-            else:
-                endpoint_a, endpoint_b = dst, src
+            endpoint_a, endpoint_b = sorted((src, dst))
 
             key = (
                 details["protocol"],
@@ -128,7 +125,11 @@ def analyze_pcap(file_path: Path | str) -> dict:
 
         packet_count = len(sizes)
         total_bytes = sum(sizes)
-        duration = max(timestamps) - min(timestamps) if timestamps else 0.0
+        duration = (
+            max(timestamps) - min(timestamps)
+            if timestamps
+            else 0.0
+        )
 
         flows.append({
             "flow_id": flow_id,
@@ -139,10 +140,20 @@ def analyze_pcap(file_path: Path | str) -> dict:
             "protocol": data["protocol"],
             "packet_count": packet_count,
             "total_bytes": total_bytes,
-            "duration": duration,
-            "packet_rate": packet_count / duration if duration > 0 else 0.0,
-            "byte_rate": total_bytes / duration if duration > 0 else 0.0,
-            "average_packet_size": total_bytes / packet_count if packet_count else 0.0,
+            "duration": round(duration, 6),
+            "packet_rate": (
+                round(packet_count / duration, 6)
+                if duration > 0
+                else 0.0
+            ),
+            "byte_rate": (
+                round(total_bytes / duration, 6)
+                if duration > 0
+                else 0.0
+            ),
+            "average_packet_size": round(
+                total_bytes / packet_count, 6
+            ) if packet_count else 0.0,
             "min_packet_size": min(sizes) if sizes else 0,
             "max_packet_size": max(sizes) if sizes else 0,
             "forward_packets": data["forward_packets"],
@@ -155,4 +166,5 @@ def analyze_pcap(file_path: Path | str) -> dict:
         "total_packets": total_packets,
         "total_flows": len(flows),
         "flows": flows,
+        "ignored_packets": ignored_packets,
     }

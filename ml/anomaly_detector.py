@@ -41,6 +41,50 @@ FEATURE_COLUMNS = [
 MINIMUM_FLOWS = 10
 
 
+def _load_model_bundle():
+    """Load the saved model and support both known bundle formats."""
+
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Model not found: {MODEL_PATH}. Train the model first."
+        )
+
+    saved = joblib.load(MODEL_PATH)
+
+    # Support a saved model bundle using either key.
+    if isinstance(saved, dict):
+        model = saved.get("pipeline", saved.get("model"))
+        columns = saved.get("feature_columns", FEATURE_COLUMNS)
+    else:
+        # Support a legacy file containing the estimator directly.
+        model = saved
+        columns = FEATURE_COLUMNS
+
+    if model is None:
+        raise ValueError(
+            "Invalid model bundle: missing 'pipeline' or 'model' key. "
+            "Retrain the anomaly model."
+        )
+
+    if not hasattr(model, "predict"):
+        raise ValueError(
+            "Invalid model bundle: the saved model cannot predict."
+        )
+
+    if not hasattr(model, "decision_function"):
+        raise ValueError(
+            "Invalid model bundle: the saved model has no "
+            "decision_function method."
+        )
+
+    if not isinstance(columns, list) or not columns:
+        raise ValueError(
+            "Invalid model bundle: feature_columns must be a non-empty list."
+        )
+
+    return model, columns
+
+
 def train_model(dataset_path=None):
     """Train and save an Isolation Forest anomaly detector."""
 
@@ -50,9 +94,7 @@ def train_model(dataset_path=None):
         data_path = ROOT_DIR / data_path
 
     if not data_path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found: {data_path}"
-        )
+        raise FileNotFoundError(f"Dataset not found: {data_path}")
 
     print("=" * 60)
     print("NetSentry AI - Anomaly Detection Training")
@@ -64,44 +106,26 @@ def train_model(dataset_path=None):
     if df.empty:
         raise ValueError("The dataset is empty.")
 
-    missing = [
-        column
-        for column in FEATURE_COLUMNS
-        if column not in df.columns
-    ]
+    missing = [column for column in FEATURE_COLUMNS if column not in df.columns]
 
     if missing:
         raise ValueError(
             f"Dataset is missing required features: {missing}"
         )
 
-    # Keep only the numeric model features.
-    X = df[FEATURE_COLUMNS].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-
-    # Infinite values cannot be used as model inputs.
+    X = df[FEATURE_COLUMNS].apply(pd.to_numeric, errors="coerce")
     X = X.replace([float("inf"), float("-inf")], float("nan"))
-
-    # Drop rows with no usable feature values.
     X = X.dropna(how="all")
 
-    # Reject rows containing negative network measurements.
     if (X < 0).any().any():
-        raise ValueError(
-            "Network-flow features must not be negative."
-        )
+        raise ValueError("Network-flow features must not be negative.")
 
     if len(X) < MINIMUM_FLOWS:
         raise ValueError(
             f"Only {len(X)} usable rows found. "
-            f"At least {MINIMUM_FLOWS} are required by this prototype. "
-            "Collect more varied traffic or use the synthetic demo "
-            "dataset for a pipeline test."
+            f"At least {MINIMUM_FLOWS} are required."
         )
 
-    # Require variation in at least one feature.
     if X.nunique(dropna=True).max() <= 1:
         raise ValueError(
             "The dataset has no variation in its features. "
@@ -111,17 +135,10 @@ def train_model(dataset_path=None):
     print(f"Usable rows: {len(X)}")
     print(f"Features: {len(FEATURE_COLUMNS)}")
 
-    # Impute missing values, standardize features, and fit detector.
     model = Pipeline(
         steps=[
-            (
-                "imputer",
-                SimpleImputer(strategy="median"),
-            ),
-            (
-                "scaler",
-                StandardScaler(),
-            ),
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
             (
                 "detector",
                 IsolationForest(
@@ -135,7 +152,6 @@ def train_model(dataset_path=None):
 
     model.fit(X)
 
-    # Save model and metadata.
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
     joblib.dump(
@@ -160,37 +176,21 @@ def train_model(dataset_path=None):
 def predict_anomalies(flows):
     """Predict whether each supplied flow looks anomalous."""
 
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            f"Model not found: {MODEL_PATH}. "
-            "Train the model first."
-        )
-
     if not flows:
         return []
 
-    saved = joblib.load(MODEL_PATH)
-    model = saved["model"]
-    columns = saved["feature_columns"]
+    model, columns = _load_model_bundle()
 
     df = pd.DataFrame(flows)
 
-    missing = [
-        column
-        for column in columns
-        if column not in df.columns
-    ]
+    missing = [column for column in columns if column not in df.columns]
 
     if missing:
         raise ValueError(
             f"Flow data is missing required features: {missing}"
         )
 
-    X = df[columns].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-
+    X = df[columns].apply(pd.to_numeric, errors="coerce")
     X = X.replace([float("inf"), float("-inf")], float("nan"))
 
     if X.isna().all(axis=1).any():
@@ -199,9 +199,7 @@ def predict_anomalies(flows):
         )
 
     if (X < 0).any().any():
-        raise ValueError(
-            "Network-flow features must not be negative."
-        )
+        raise ValueError("Network-flow features must not be negative.")
 
     predictions = model.predict(X)
     scores = model.decision_function(X)
@@ -215,13 +213,8 @@ def predict_anomalies(flows):
             {
                 "flow_index": index,
                 "anomaly": is_anomaly,
-                "label": (
-                    "SUSPICIOUS" if is_anomaly else "NORMAL"
-                ),
-                "anomaly_score": round(
-                    float(scores[index]),
-                    6,
-                ),
+                "label": "SUSPICIOUS" if is_anomaly else "NORMAL",
+                "anomaly_score": round(float(scores[index]), 6),
             }
         )
 

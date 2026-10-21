@@ -1,11 +1,15 @@
 
-import pandas as pd
+"""Prepare a clean feature dataset for NetSentry AI."""
+
 from pathlib import Path
+
+import pandas as pd
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 INPUT_FILE = (
-    PROJECT_ROOT / "datasets" / "processed" / "flow_features.csv"
+    PROJECT_ROOT / "datasets" / "processed" / "training_features.csv"
 )
 
 OUTPUT_FILE = (
@@ -28,8 +32,14 @@ FEATURE_COLUMNS = [
     "backward_bytes",
 ]
 
+NUMERIC_COLUMNS = [
+    col for col in FEATURE_COLUMNS if col != "protocol"
+]
+
 
 def normalize_protocol(value):
+    """Normalize common numeric and textual protocol identifiers."""
+
     value = str(value).strip().upper()
 
     return {
@@ -44,16 +54,20 @@ def main():
     print("NetSentry AI - Dataset Preparation")
     print("=" * 60)
 
-    if not INPUT_FILE.exists():
+    if not INPUT_FILE.is_file():
         raise FileNotFoundError(
-            f"Dataset not found: {INPUT_FILE}"
+            f"Training dataset not found: {INPUT_FILE}\n"
+            "Run ml.collect_dataset first."
         )
 
     df = pd.read_csv(INPUT_FILE)
 
+    print(f"Input file: {INPUT_FILE.name}")
     print(f"Original rows: {len(df)}")
 
-    # Validate the schema before accessing feature columns.
+    if df.empty:
+        raise ValueError("The training dataset is empty.")
+
     missing_columns = [
         col for col in FEATURE_COLUMNS if col not in df.columns
     ]
@@ -64,28 +78,32 @@ def main():
         )
 
     if "source_file" in df.columns:
-        print("\nFlows by source file:")
-        print(df.groupby("source_file").size())
+        print("\nRows by source CSV:")
+        print(df["source_file"].value_counts(dropna=False))
 
-    # Normalize protocol labels.
+    # Normalize protocol values.
     df["protocol"] = df["protocol"].apply(normalize_protocol)
 
-    # Convert numeric features and mark invalid values as missing.
-    numeric_columns = [
-        col for col in FEATURE_COLUMNS if col != "protocol"
-    ]
-
-    for col in numeric_columns:
+    # Convert features to numeric values.
+    for col in NUMERIC_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Remove records with missing or invalid feature values.
+    # Remove invalid numbers, including positive and negative infinity.
+    df[NUMERIC_COLUMNS] = df[NUMERIC_COLUMNS].replace(
+        [float("inf"), float("-inf")],
+        float("nan"),
+    )
+
+    # Keep only rows with valid values for every required feature.
     before_cleaning = len(df)
     df = df.dropna(subset=FEATURE_COLUMNS).copy()
 
-    print(f"Rows removed for invalid/missing features: "
-          f"{before_cleaning - len(df)}")
+    print(
+        "\nRows removed for invalid/missing features: "
+        f"{before_cleaning - len(df)}"
+    )
 
-    # Report repeated feature vectors; do not silently remove them.
+    # Report duplicates, but retain them until their provenance is checked.
     duplicate_mask = df.duplicated(
         subset=FEATURE_COLUMNS,
         keep=False,
@@ -96,8 +114,10 @@ def main():
         f"{int(duplicate_mask.sum())}"
     )
 
-    # Preserve source_file and other available metadata.
-    # Investigate repeated records before deciding whether to remove them.
+    if "source_file" in df.columns:
+        print("\nRows retained by source CSV:")
+        print(df["source_file"].value_counts(dropna=False))
+
     df = df.reset_index(drop=True)
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +126,7 @@ def main():
     print("\nProtocol distribution:")
     print(df["protocol"].value_counts())
 
-    print(f"\nOutput: {OUTPUT_FILE}")
+    print(f"\nOutput file: {OUTPUT_FILE}")
     print(f"Final dataset shape: {df.shape}")
     print("\nDataset preparation: SUCCESS")
 
