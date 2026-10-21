@@ -281,7 +281,7 @@ async def analyze_pcap_upload(
             ) from exc
 
         from backend.app.services.pcap_service import analyze_pcap
-        from ml.anomaly_detector import predict_anomalies
+        from ml.anomaly_service import predict_anomalies
 
         try:
             analysis = analyze_pcap(temp_path)
