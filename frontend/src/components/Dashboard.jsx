@@ -33,9 +33,11 @@ import {
 import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
-import { uploadPcap, getAnalysisHistory } from "../services/api";
-
-const API_BASE_URL = "http://127.0.0.1:8000";
+import {
+  uploadPcap,
+  getAnalysisHistory,
+  API_BASE_URL,
+} from "../services/api";
 
 const navigation = [
   { label: "Overview", icon: LayoutDashboard },
@@ -187,7 +189,10 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    loadHistory();
+    // Defer the initial load so the effect does not set state synchronously.
+    const timeoutId = setTimeout(loadHistory, 0);
+
+    return () => clearTimeout(timeoutId);
   }, [loadHistory]);
 
   async function handlePcapUpload(file) {

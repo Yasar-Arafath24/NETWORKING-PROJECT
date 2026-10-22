@@ -1,7 +1,9 @@
 
 import { useEffect, useState } from "react";
 
-const HEALTH_URL = "http://127.0.0.1:8000/api/v1/health";
+import { API_BASE_URL } from "../services/api";
+
+const HEALTH_URL = `${API_BASE_URL}/api/v1/health`;
 
 export default function BackendStatus() {
   const [status, setStatus] = useState("checking");

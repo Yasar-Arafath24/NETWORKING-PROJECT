@@ -2,7 +2,10 @@
 import { useRef, useState } from "react";
 import { FileSearch, FileText, Upload, X, CheckCircle2 } from "lucide-react";
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+
+// Served from frontend/public so it is available in dev and in production builds.
+const SAMPLE_PCAP_URL = "/samples/netsentry_sample.pcap";
 
 export default function PcapUpload({
   onUpload,
@@ -30,7 +33,7 @@ export default function PcapUpload({
 
     if (selectedFile.size > MAX_FILE_SIZE) {
       setFile(null);
-      setError("The file exceeds the 50 MB frontend limit.");
+      setError("The file exceeds the 20 MB upload limit.");
       return;
     }
 
@@ -137,8 +140,15 @@ export default function PcapUpload({
             Browse files
           </button>
 
-          <span className="pcap-size-note">Maximum frontend size: 50 MB</span>
+          <span className="pcap-size-note">Maximum size: 20 MB</span>
         </div>
+
+        <p className="pcap-sample-note">
+          No capture handy?{" "}
+          <a href={SAMPLE_PCAP_URL} download="netsentry_sample.pcap">
+            Download a sample PCAP
+          </a>
+        </p>
 
         {file && (
           <div className="pcap-selected-file">

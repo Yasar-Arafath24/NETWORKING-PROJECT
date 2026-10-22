@@ -59,6 +59,10 @@ htmlcov/
 *.pcapng
 *.cap
 
+# Keep the small, synthetic sample captures that ship with the project
+!datasets/samples/*.pcap
+!frontend/public/samples/*.pcap
+
 # ------------------------------------------
 # Generated datasets
 # ------------------------------------------

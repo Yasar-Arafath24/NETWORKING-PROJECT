@@ -43,7 +43,10 @@ export default function AnalysisHistory() {
   }, []);
 
   useEffect(() => {
-    loadHistory();
+    // Defer the initial load so the effect does not set state synchronously.
+    const timeoutId = setTimeout(loadHistory, 0);
+
+    return () => clearTimeout(timeoutId);
   }, [loadHistory]);
 
   const filteredReports = reports.filter((report) => {

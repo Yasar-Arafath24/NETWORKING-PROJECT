@@ -1,5 +1,16 @@
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+// Base URL for the NetSentry backend API.
+// Configure it with VITE_API_BASE_URL in frontend/.env; it falls back to the
+// local development backend so the app works out of the box.
+const API_BASE_URL = (
+  import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000"
+).replace(/\/+$/, "");
+
+const BACKEND_UNREACHABLE_MESSAGE =
+  `Cannot reach the NetSentry backend at ${API_BASE_URL}. ` +
+  'Make sure it is running (python -m uvicorn backend.app.main:app --port 8000).';
+
+export { API_BASE_URL };
 
 /**
  * Parse API responses and handle errors consistently.
@@ -28,6 +39,29 @@ async function parseResponse(response) {
 }
 
 /**
+ * Fetch a URL and turn network-level failures (for example a stopped
+ * backend, which the browser reports as "Failed to fetch") into a clear,
+ * actionable message instead of a raw browser error.
+ */
+async function request(url, options) {
+  let response;
+
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The request timed out before the backend replied.", {
+        cause: error,
+      });
+    }
+
+    throw new Error(BACKEND_UNREACHABLE_MESSAGE, { cause: error });
+  }
+
+  return parseResponse(response);
+}
+
+/**
  * Upload a PCAP file and run backend analysis.
  * FastAPI expects a multipart field named "file".
  */
@@ -39,15 +73,10 @@ export async function uploadPcap(file) {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(
-    `${API_BASE_URL}/api/v1/pcap/analyze`,
-    {
-      method: "POST",
-      body: formData,
-    }
-  );
-
-  return parseResponse(response);
+  return request(`${API_BASE_URL}/api/v1/pcap/analyze`, {
+    method: "POST",
+    body: formData,
+  });
 }
 
 /**
@@ -62,11 +91,7 @@ export async function getAnalysisHistory({
     limit: String(limit),
   });
 
-  const response = await fetch(
-    `${API_BASE_URL}/api/v1/monitoring/history?${params}`
-  );
-
-  return parseResponse(response);
+  return request(`${API_BASE_URL}/api/v1/monitoring/history?${params}`);
 }
 
 /**
@@ -74,11 +99,7 @@ export async function getAnalysisHistory({
  * Uses the existing history endpoint.
  */
 export async function checkBackendConnection() {
-  const response = await fetch(
-    `${API_BASE_URL}/api/v1/monitoring/history?skip=0&limit=1`
-  );
-
-  await parseResponse(response);
+  await request(`${API_BASE_URL}/api/v1/monitoring/history?skip=0&limit=1`);
 
   return true;
 }

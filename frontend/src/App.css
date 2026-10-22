@@ -1121,6 +1121,22 @@
   line-height: 1.7;
 }
 
+.pcap-sample-note {
+  margin: 12px 0 0;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.pcap-sample-note a {
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.pcap-sample-note a:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 600px) {
   .pcap-upload-panel {
     padding: 16px;
