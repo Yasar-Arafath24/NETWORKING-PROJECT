@@ -1,5 +1,5 @@
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   Activity,
   Search,
@@ -338,8 +338,8 @@ export default function FlowResults({ flows = [] }) {
               const expanded = expandedFlow === rowKey;
 
               return (
-                <>
-                  <tr key={rowKey}>
+                <Fragment key={rowKey}>
+                  <tr>
                     <td>
                       <span className="protocol-badge">{protocol}</span>
                     </td>
@@ -409,7 +409,7 @@ export default function FlowResults({ flows = [] }) {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>

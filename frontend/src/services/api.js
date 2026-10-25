@@ -103,3 +103,24 @@ export async function checkBackendConnection() {
 
   return true;
 }
+
+/**
+ * Retrieve the latest persisted PCAP analysis.
+ * Returns 404 (detail message) when no analysis has been stored yet.
+ */
+export async function getLatestAnalysis() {
+  return request(`${API_BASE_URL}/api/v1/monitoring/latest`);
+}
+
+/**
+ * Retrieve recent security alerts.
+ */
+export async function getSecurityAlerts({ limit = 100 } = {}) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+  });
+
+  return request(
+    `${API_BASE_URL}/api/v1/monitoring/history/alerts?${params}`
+  );
+}
