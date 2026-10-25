@@ -80,3 +80,108 @@ button:disabled {
   color: #ffffff;
   background: var(--color-primary);
 }
+
+.traffic-monitor-section {
+  width: 100%;
+  min-width: 0;
+}
+
+.traffic-monitor-section .panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.traffic-monitor-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.traffic-flow-heading {
+  margin-top: 28px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.traffic-flow-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.traffic-inline-icon {
+  flex-shrink: 0;
+}
+
+.traffic-filter {
+  max-width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: white;
+  color: #334155;
+  font: inherit;
+}
+
+.traffic-status-danger,
+.traffic-status-normal {
+  display: inline-block;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.traffic-status-danger {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.traffic-status-normal {
+  color: #047857;
+  background: #d1fae5;
+}
+
+.traffic-monitor-section .chart-empty {
+  padding: 36px 20px;
+  text-align: center;
+}
+
+.traffic-monitor-section .chart-empty svg {
+  margin: 0 auto 12px;
+  color: #64748b;
+}
+
+.traffic-monitor-section .chart-empty p {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.traffic-monitor-section .chart-empty span {
+  display: block;
+  max-width: 520px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.traffic-spin {
+  animation: traffic-spin-animation 1s linear infinite;
+}
+
+@keyframes traffic-spin-animation {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 640px) {
+  .traffic-flow-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .traffic-filter {
+    width: 100%;
+  }
+}

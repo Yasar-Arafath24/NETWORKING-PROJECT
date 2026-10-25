@@ -1,23 +1,28 @@
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowDownRight,
   ArrowUpRight,
   Bell,
+  CheckCircle2,
   ChevronDown,
   CircleHelp,
+  Clock,
   FileSearch,
   FileText,
   Gauge,
   LayoutDashboard,
+  Menu,
   Network,
   Search,
   Settings,
   Shield,
   ShieldAlert,
+  ShieldCheck,
   Upload,
   Wifi,
+  X,
 } from "lucide-react";
 
 import {
@@ -33,6 +38,7 @@ import {
 import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
+
 import {
   uploadPcap,
   getAnalysisHistory,
@@ -48,6 +54,11 @@ const navigation = [
   { label: "Analysis History", icon: FileText },
 ];
 
+const preferenceNavigation = [
+  { label: "Settings", icon: Settings },
+  { label: "Help", icon: CircleHelp },
+];
+
 function formatNumber(value) {
   if (
     value === null ||
@@ -59,6 +70,32 @@ function formatNumber(value) {
   }
 
   return Number(value).toLocaleString();
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1
+  );
+
+  return `${(bytes / 1024 ** index).toFixed(
+    index === 0 ? 0 : 2
+  )} ${units[index]}`;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : date.toLocaleString();
 }
 
 function MetricCard({
@@ -95,6 +132,7 @@ function MetricCard({
             {trend}
           </span>
         )}
+
         <span className="metric-description">{description}</span>
       </div>
     </article>
@@ -109,16 +147,19 @@ function PageHeading({ eyebrow, title, description, action }) {
         <h1>{title}</h1>
         <p className="page-description">{description}</p>
       </div>
+
       {action}
     </section>
   );
 }
 
-function EmptyState({ title, description }) {
+function EmptyState({ title, description, action }) {
   return (
     <div className="chart-empty">
+      <Shield size={30} />
       <p>{title}</p>
       <span>{description}</span>
+      {action}
     </div>
   );
 }
@@ -128,24 +169,151 @@ function getFlows(result) {
   if (Array.isArray(result?.results)) return result.results;
   if (Array.isArray(result?.data?.flows)) return result.data.flows;
   if (Array.isArray(result?.analysis?.flows)) return result.analysis.flows;
+  if (Array.isArray(result?.data?.results)) return result.data.results;
+
   return [];
 }
 
-function getSuspiciousFlows(flows) {
-  return flows.filter((flow) => {
-    const label = String(
-      flow?.classification ?? flow?.label ?? flow?.prediction ?? ""
-    ).toLowerCase();
+function getFlowLabel(flow) {
+  return String(
+    flow?.classification ??
+      flow?.label ??
+      flow?.anomaly_prediction ??
+      flow?.prediction ??
+      flow?.prediction_label ??
+      flow?.status ??
+      ""
+  )
+    .trim()
+    .toLowerCase();
+}
 
-    return (
-      flow?.is_suspicious === true ||
-      flow?.is_anomaly === true ||
-      flow?.suspicious === true ||
-      flow?.anomaly === true ||
-      label.includes("suspicious") ||
-      label.includes("anomal")
-    );
-  });
+function isSuspiciousFlow(flow) {
+  const label = getFlowLabel(flow);
+
+  return (
+    flow?.is_suspicious === true ||
+    flow?.is_anomaly === true ||
+    flow?.suspicious === true ||
+    flow?.anomaly === true ||
+    Number(flow?.anomaly_prediction) === -1 ||
+    label.includes("suspicious") ||
+    label.includes("anomal") ||
+    label === "attack" ||
+    label === "malicious" ||
+    label === "intrusion"
+  );
+}
+
+function isNormalFlow(flow) {
+  const label = getFlowLabel(flow);
+
+  return (
+    flow?.is_suspicious === false ||
+    flow?.is_anomaly === false ||
+    flow?.anomaly === false ||
+    Number(flow?.anomaly_prediction) === 1 ||
+    label === "normal" ||
+    label === "benign" ||
+    label === "safe"
+  );
+}
+
+function getSourceIp(flow) {
+  return (
+    flow?.src_ip ??
+    flow?.source_ip ??
+    flow?.src ??
+    flow?.source ??
+    "Unknown"
+  );
+}
+
+function getDestinationIp(flow) {
+  return (
+    flow?.dst_ip ??
+    flow?.destination_ip ??
+    flow?.dst ??
+    flow?.destination ??
+    "Unknown"
+  );
+}
+
+function getSeverity(alert) {
+  const severity = String(
+    alert?.severity ?? alert?.level ?? alert?.risk ?? "medium"
+  ).toLowerCase();
+
+  if (severity.includes("critical")) return "critical";
+  if (severity.includes("high")) return "high";
+  if (severity.includes("low") || severity.includes("info")) return "low";
+
+  return "medium";
+}
+
+function getAlertTitle(alert) {
+  return (
+    alert?.title ??
+    alert?.name ??
+    alert?.type ??
+    alert?.rule_name ??
+    alert?.message ??
+    "Suspicious network activity"
+  );
+}
+
+function getAlertDescription(alert) {
+  return (
+    alert?.description ??
+    alert?.message ??
+    alert?.details ??
+    "Review this event and investigate the associated network traffic."
+  );
+}
+
+function getAlerts(result) {
+  if (Array.isArray(result?.alerts)) return result.alerts;
+  if (Array.isArray(result?.data?.alerts)) return result.data.alerts;
+  if (Array.isArray(result?.analysis?.alerts)) return result.analysis.alerts;
+
+  return [];
+}
+
+function getHistoryReports(result) {
+  if (Array.isArray(result?.reports)) return result.reports;
+  if (Array.isArray(result?.history)) return result.history;
+  if (Array.isArray(result?.data?.reports)) return result.data.reports;
+  if (Array.isArray(result)) return result;
+
+  return [];
+}
+
+function getPacketTotal(result) {
+  return (
+    result?.total_packets ??
+    result?.packet_count ??
+    result?.summary?.total_packets ??
+    result?.data?.total_packets ??
+    null
+  );
+}
+
+function getFlowTotal(result) {
+  return (
+    result?.total_flows ??
+    result?.flow_count ??
+    result?.summary?.total_flows ??
+    result?.data?.total_flows ??
+    null
+  );
+}
+
+function SeverityBadge({ severity = "medium", children }) {
+  return (
+    <span className={`severity-badge ${severity}`}>
+      {children ?? severity.toUpperCase()}
+    </span>
+  );
 }
 
 export default function Dashboard() {
@@ -160,20 +328,20 @@ export default function Dashboard() {
   const [backendStatus, setBackendStatus] = useState("Checking");
   const [activePage, setActivePage] = useState("Overview");
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
 
     try {
-      const result = await getAnalysisHistory({ skip: 0, limit: 20 });
+      const result = await getAnalysisHistory({
+        skip: 0,
+        limit: 20,
+      });
 
-      setHistory(
-        Array.isArray(result?.reports)
-          ? result.reports
-          : Array.isArray(result)
-            ? result
-            : []
-      );
-
+      setHistory(getHistoryReports(result));
       setHistoryError("");
       setBackendStatus("Connected");
     } catch (error) {
@@ -182,6 +350,7 @@ export default function Dashboard() {
           ? error.message
           : "Unable to load analysis history."
       );
+
       setBackendStatus("Unavailable");
     } finally {
       setHistoryLoading(false);
@@ -189,11 +358,32 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    // Defer the initial load so the effect does not set state synchronously.
-    const timeoutId = setTimeout(loadHistory, 0);
-
-    return () => clearTimeout(timeoutId);
+    loadHistory();
   }, [loadHistory]);
+
+  useEffect(() => {
+    function handleShortcut(event) {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "k"
+      ) {
+        event.preventDefault();
+        document.getElementById("dashboard-search")?.focus();
+      }
+
+      if (event.key === "Escape") {
+        setMobileMenuOpen(false);
+        setProfileMenuOpen(false);
+        setSearchQuery("");
+      }
+    }
+
+    window.addEventListener("keydown", handleShortcut);
+
+    return () => {
+      window.removeEventListener("keydown", handleShortcut);
+    };
+  }, []);
 
   async function handlePcapUpload(file) {
     setUploadingPcap(true);
@@ -201,13 +391,20 @@ export default function Dashboard() {
 
     try {
       const result = await uploadPcap(file);
+
       setAnalysis(result);
+      setActivePage("PCAP Analysis");
+
       await loadHistory();
+
       return result;
     } catch (error) {
       setUploadError(
-        error instanceof Error ? error.message : "PCAP analysis failed."
+        error instanceof Error
+          ? error.message
+          : "PCAP analysis failed."
       );
+
       throw error;
     } finally {
       setUploadingPcap(false);
@@ -216,26 +413,57 @@ export default function Dashboard() {
 
   function navigateTo(label) {
     setActivePage(label);
+    setMobileMenuOpen(false);
+    setProfileMenuOpen(false);
+    setSearchQuery("");
   }
 
+  const flows = useMemo(() => getFlows(analysis), [analysis]);
+
+  const suspiciousFlows = useMemo(
+    () => flows.filter(isSuspiciousFlow),
+    [flows]
+  );
+
+  const normalFlows = useMemo(
+    () => flows.filter(isNormalFlow),
+    [flows]
+  );
+
+  const unclassifiedFlows = useMemo(
+    () =>
+      flows.filter(
+        (flow) => !isSuspiciousFlow(flow) && !isNormalFlow(flow)
+      ),
+    [flows]
+  );
+
+  const alerts = useMemo(() => getAlerts(analysis), [analysis]);
+
+  const criticalAlerts = alerts.filter(
+    (alert) => getSeverity(alert) === "critical"
+  );
+
+  const highAlerts = alerts.filter(
+    (alert) => getSeverity(alert) === "high"
+  );
+
   const packetTotal =
-    analysis?.total_packets ??
-    analysis?.packet_count ??
-    analysis?.summary?.total_packets ??
+    getPacketTotal(analysis) ??
     (history.length
       ? history.reduce(
-          (sum, report) => sum + (Number(report.total_packets) || 0),
+          (sum, report) =>
+            sum + (Number(report.total_packets) || 0),
           0
         )
       : null);
 
   const flowTotal =
-    analysis?.total_flows ??
-    analysis?.flow_count ??
-    analysis?.summary?.total_flows ??
+    getFlowTotal(analysis) ??
     (history.length
       ? history.reduce(
-          (sum, report) => sum + (Number(report.total_flows) || 0),
+          (sum, report) =>
+            sum + (Number(report.total_flows) || 0),
           0
         )
       : null);
@@ -244,10 +472,20 @@ export default function Dashboard() {
 
   const trafficData = Array.isArray(analysis?.traffic_data)
     ? analysis.traffic_data
-    : [];
+    : Array.isArray(analysis?.data?.traffic_data)
+      ? analysis.data.traffic_data
+      : [];
 
-  const flows = getFlows(analysis);
-  const suspiciousFlows = getSuspiciousFlows(flows);
+  const hasAnomalyResult =
+    analysis !== null &&
+    (
+      analysis?.suspicious_flows !== undefined ||
+      analysis?.anomalies_detected !== undefined ||
+      analysis?.anomaly_count !== undefined ||
+      analysis?.summary?.suspicious_flows !== undefined ||
+      suspiciousFlows.length > 0 ||
+      flows.length > 0
+    );
 
   const suspiciousCount =
     analysis?.suspicious_flows ??
@@ -255,16 +493,6 @@ export default function Dashboard() {
     analysis?.anomaly_count ??
     analysis?.summary?.suspicious_flows ??
     suspiciousFlows.length;
-
-  const hasAnomalyResult =
-    analysis !== null &&
-    (analysis?.suspicious_flows !== undefined ||
-      analysis?.anomalies_detected !== undefined ||
-      analysis?.anomaly_count !== undefined ||
-      analysis?.summary?.suspicious_flows !== undefined ||
-      flows.length > 0);
-
-  const alerts = Array.isArray(analysis?.alerts) ? analysis.alerts : [];
 
   const primaryAction = (
     <button
@@ -315,7 +543,7 @@ export default function Dashboard() {
             description={
               analysis
                 ? "Latest PCAP analysis"
-                : "Sum of reports currently loaded"
+                : "Sum of loaded report values"
             }
             icon={Network}
           />
@@ -326,7 +554,7 @@ export default function Dashboard() {
             description={
               analysis
                 ? "Latest PCAP analysis"
-                : "Sum of reports currently loaded"
+                : "Sum of loaded report values"
             }
             icon={Activity}
           />
@@ -334,11 +562,13 @@ export default function Dashboard() {
           <MetricCard
             title="Anomalies detected"
             value={
-              hasAnomalyResult ? formatNumber(suspiciousCount) : "—"
+              hasAnomalyResult
+                ? formatNumber(suspiciousCount)
+                : "—"
             }
             description={
               hasAnomalyResult
-                ? "Reported or inferred from returned flow flags"
+                ? "Reported or inferred from flow flags"
                 : "No anomaly result returned"
             }
             icon={ShieldAlert}
@@ -356,6 +586,7 @@ export default function Dashboard() {
           <div className="panel" role="alert">
             <strong>Unable to load analysis history</strong>
             <p>{historyError}</p>
+
             <button
               type="button"
               className="secondary-button"
@@ -399,7 +630,12 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart
                     data={trafficData}
-                    margin={{ top: 12, right: 8, left: -16, bottom: 0 }}
+                    margin={{
+                      top: 12,
+                      right: 8,
+                      left: -16,
+                      bottom: 0,
+                    }}
                   >
                     <defs>
                       <linearGradient
@@ -468,6 +704,7 @@ export default function Dashboard() {
                 <h2>System status</h2>
                 <p>Application connection information</p>
               </div>
+
               <Gauge size={20} />
             </div>
 
@@ -476,10 +713,12 @@ export default function Dashboard() {
                 <span className="system-row-icon">
                   <Wifi size={18} />
                 </span>
+
                 <div className="system-row-copy">
                   <strong>FastAPI backend</strong>
                   <small>History endpoint connectivity</small>
                 </div>
+
                 <span className="status-neutral">{backendStatus}</span>
               </div>
 
@@ -487,6 +726,7 @@ export default function Dashboard() {
                 <span className="system-row-icon">
                   <Network size={18} />
                 </span>
+
                 <div className="system-row-copy">
                   <strong>Packet analysis</strong>
                   <small>
@@ -501,6 +741,7 @@ export default function Dashboard() {
                 <span className="system-row-icon">
                   <ShieldAlert size={18} />
                 </span>
+
                 <div className="system-row-copy">
                   <strong>AI detection</strong>
                   <small>
@@ -513,8 +754,8 @@ export default function Dashboard() {
             </div>
 
             <div className="system-note">
-              The backend status reflects the history endpoint request. It
-              does not independently verify every backend service or model.
+              Backend status reflects the history endpoint request. It does
+              not independently verify every backend service or model.
             </div>
           </article>
         </section>
@@ -550,17 +791,14 @@ export default function Dashboard() {
                     <th>Created</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {history.slice(0, 5).map((report, index) => (
                     <tr key={report.id ?? index}>
                       <td>{report.id ?? "—"}</td>
                       <td>{formatNumber(report.total_packets)}</td>
                       <td>{formatNumber(report.total_flows)}</td>
-                      <td>
-                        {report.created_at
-                          ? new Date(report.created_at).toLocaleString()
-                          : "—"}
-                      </td>
+                      <td>{formatDate(report.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -600,28 +838,21 @@ export default function Dashboard() {
                 <h2>Latest analysis result</h2>
                 <p>The response from your most recent PCAP upload</p>
               </div>
+
               <span className="status-neutral">Response received</span>
             </div>
 
             <section className="metrics-grid">
               <MetricCard
                 title="Packets"
-                value={formatNumber(
-                  analysis.total_packets ??
-                    analysis.packet_count ??
-                    analysis.summary?.total_packets
-                )}
+                value={formatNumber(getPacketTotal(analysis))}
                 description="Reported by the API"
                 icon={Network}
               />
 
               <MetricCard
                 title="Flows"
-                value={formatNumber(
-                  analysis.total_flows ??
-                    analysis.flow_count ??
-                    analysis.summary?.total_flows
-                )}
+                value={formatNumber(getFlowTotal(analysis))}
                 description="Reported by the API"
                 icon={Activity}
               />
@@ -629,11 +860,13 @@ export default function Dashboard() {
               <MetricCard
                 title="Anomalies"
                 value={
-                  hasAnomalyResult ? formatNumber(suspiciousCount) : "—"
+                  hasAnomalyResult
+                    ? formatNumber(suspiciousCount)
+                    : "—"
                 }
                 description={
                   hasAnomalyResult
-                    ? "Reported by the API or flow flags"
+                    ? "Reported by API or inferred from flow flags"
                     : "No anomaly count returned"
                 }
                 icon={ShieldAlert}
@@ -660,6 +893,17 @@ export default function Dashboard() {
   }
 
   function renderTrafficMonitoring() {
+    const totalBytes = flows.reduce((sum, flow) => {
+      const bytes = Number(
+        flow?.total_bytes ??
+          flow?.bytes ??
+          flow?.byte_count ??
+          0
+      );
+
+      return sum + (Number.isFinite(bytes) && bytes > 0 ? bytes : 0);
+    }, 0);
+
     return (
       <>
         <PageHeading
@@ -669,58 +913,127 @@ export default function Dashboard() {
           action={primaryAction}
         />
 
-        {trafficData.length > 0 && (
-          <section className="panel traffic-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Packet activity</h2>
-                <p>Time-series data returned by the latest analysis</p>
-              </div>
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Network traffic monitoring</h2>
+              <p>
+                Review the flow records available from your latest PCAP
+                analysis.
+              </p>
             </div>
 
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={trafficData}>
-                  <CartesianGrid
-                    stroke="#e2e8f0"
-                    strokeDasharray="3 3"
-                    vertical={false}
-                  />
-                  <XAxis dataKey="time" />
-                  <YAxis />
-                  <Tooltip />
-                  <Area
-                    type="monotone"
-                    dataKey="packets"
-                    name="Packets"
-                    stroke="#2563eb"
-                    fill="#dbeafe"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </section>
-        )}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={loadHistory}
+              disabled={historyLoading}
+            >
+              <Activity size={16} />
+              {historyLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
 
-        {analysis ? (
-          flows.length > 0 ? (
-            <FlowResults flows={flows} />
-          ) : (
-            <section className="panel">
-              <EmptyState
-                title="No flow data available."
-                description="The latest analysis did not return a recognized flow list."
-              />
-            </section>
-          )
-        ) : (
-          <section className="panel">
-            <EmptyState
-              title="No traffic analysis yet."
-              description="Upload a PCAP file to view extracted network flows."
+          <section className="metrics-grid">
+            <MetricCard
+              title="Total flows"
+              value={formatNumber(flows.length)}
+              description="Flows in the latest analysis"
+              icon={Activity}
+            />
+
+            <MetricCard
+              title="Suspicious flows"
+              value={formatNumber(suspiciousFlows.length)}
+              description="Flows flagged for review"
+              icon={ShieldAlert}
+            />
+
+            <MetricCard
+              title="Traffic volume"
+              value={formatBytes(totalBytes)}
+              description="Sum of reported flow bytes"
+              icon={Network}
+            />
+
+            <MetricCard
+              title="Analysis status"
+              value={analysis ? "Available" : "Waiting"}
+              description={
+                analysis
+                  ? "Latest PCAP response received"
+                  : "Upload a PCAP to populate traffic data"
+              }
+              icon={Gauge}
             />
           </section>
-        )}
+
+          {trafficData.length > 0 && (
+            <div className="traffic-chart-section">
+              <div className="panel-heading">
+                <div>
+                  <h3>Packet activity</h3>
+                  <p>Time-series data from the latest analysis</p>
+                </div>
+              </div>
+
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={trafficData}>
+                    <CartesianGrid
+                      stroke="#e2e8f0"
+                      strokeDasharray="3 3"
+                      vertical={false}
+                    />
+                    <XAxis dataKey="time" />
+                    <YAxis />
+                    <Tooltip />
+                    <Area
+                      type="monotone"
+                      dataKey="packets"
+                      name="Packets"
+                      stroke="#2563eb"
+                      strokeWidth={2}
+                      fill="#dbeafe"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          <div className="panel-heading flow-records-heading">
+            <div>
+              <h2>Network flow records</h2>
+              <p>
+                {flows.length
+                  ? `${formatNumber(flows.length)} flow records found`
+                  : "Flow records appear after a successful PCAP analysis"}
+              </p>
+            </div>
+          </div>
+
+          {!analysis ? (
+            <EmptyState
+              title="No traffic records available"
+              description="Open PCAP Analysis, upload a .pcap or .pcapng file, and run the analysis."
+              action={primaryAction}
+            />
+          ) : flows.length === 0 ? (
+            <EmptyState
+              title="No flow records returned"
+              description="Inspect the raw API response on the PCAP Analysis page to confirm the response field names."
+            />
+          ) : (
+            <FlowResults flows={flows} />
+          )}
+
+          {uploadingPcap && (
+            <p className="system-note">
+              PCAP analysis is currently running…
+            </p>
+          )}
+        </section>
       </>
     );
   }
@@ -729,32 +1042,38 @@ export default function Dashboard() {
     return (
       <>
         <PageHeading
-          eyebrow="THREAT DETECTION"
+          eyebrow="MACHINE LEARNING"
           title="AI Detection"
-          description="Review anomaly information returned by the analysis API."
+          description="Review anomaly classifications returned by the latest network traffic analysis."
           action={primaryAction}
         />
 
         <section className="metrics-grid">
           <MetricCard
-            title="Reported anomalies"
-            value={
-              hasAnomalyResult ? formatNumber(suspiciousCount) : "—"
-            }
-            description={
-              hasAnomalyResult
-                ? "Value returned or inferred from flow flags"
-                : "No recognized anomaly result"
-            }
+            title="Suspicious flows"
+            value={formatNumber(suspiciousFlows.length)}
+            description="Flows flagged by recognized anomaly indicators"
             icon={ShieldAlert}
           />
 
           <MetricCard
-            title="Analyzed flows"
-            value={formatNumber(
-              analysis?.total_flows ?? analysis?.flow_count ?? flows.length
-            )}
-            description="Flows in the latest analysis response"
+            title="Normal flows"
+            value={formatNumber(normalFlows.length)}
+            description="Flows classified as normal or benign"
+            icon={ShieldCheck}
+          />
+
+          <MetricCard
+            title="Unclassified flows"
+            value={formatNumber(unclassifiedFlows.length)}
+            description="Flows without a recognized classification"
+            icon={Activity}
+          />
+
+          <MetricCard
+            title="Total analyzed flows"
+            value={formatNumber(flows.length)}
+            description="Flow records in the latest response"
             icon={Network}
           />
         </section>
@@ -762,27 +1081,76 @@ export default function Dashboard() {
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Detection status</h2>
-              <p>Information available from the latest API response</p>
+              <h2>Detection summary</h2>
+              <p>Classification breakdown for the latest analysis</p>
             </div>
+
+            <ShieldAlert size={20} />
           </div>
 
           {!analysis ? (
             <EmptyState
-              title="No analysis has been run."
-              description="Upload a PCAP file to inspect detection information returned by the backend."
+              title="No analysis available"
+              description="Upload a PCAP file and run an analysis to view AI detection results."
+              action={primaryAction}
+            />
+          ) : flows.length === 0 ? (
+            <EmptyState
+              title="No flow records returned"
+              description="The response contains no recognized flow array. Inspect the raw API response on the PCAP Analysis page."
             />
           ) : (
-            <div className="system-note">
-              {hasAnomalyResult
-                ? `The analysis returned an anomaly count of ${formatNumber(
-                    suspiciousCount
-                  )}. This display does not independently validate AI model accuracy.`
-                : "The response contains no recognized anomaly-count field or flow flags."}
-            </div>
-          )}
+            <>
+              <div className="system-list">
+                <div className="system-row">
+                  <span className="system-row-icon">
+                    <ShieldAlert size={18} />
+                  </span>
 
-          {flows.length > 0 && <FlowResults flows={flows} />}
+                  <div className="system-row-copy">
+                    <strong>Suspicious flows</strong>
+                    <small>Potentially unusual traffic requiring review</small>
+                  </div>
+
+                  <strong>{formatNumber(suspiciousFlows.length)}</strong>
+                </div>
+
+                <div className="system-row">
+                  <span className="system-row-icon">
+                    <ShieldCheck size={18} />
+                  </span>
+
+                  <div className="system-row-copy">
+                    <strong>Normal flows</strong>
+                    <small>Classified as normal or benign</small>
+                  </div>
+
+                  <strong>{formatNumber(normalFlows.length)}</strong>
+                </div>
+
+                <div className="system-row">
+                  <span className="system-row-icon">
+                    <Activity size={18} />
+                  </span>
+
+                  <div className="system-row-copy">
+                    <strong>Unclassified flows</strong>
+                    <small>No recognized classification field</small>
+                  </div>
+
+                  <strong>{formatNumber(unclassifiedFlows.length)}</strong>
+                </div>
+              </div>
+
+              <div className="system-note">
+                These counts are derived from returned fields. A normal
+                classification does not guarantee that traffic is safe and
+                does not independently validate model accuracy.
+              </div>
+
+              <FlowResults flows={flows} />
+            </>
+          )}
         </section>
       </>
     );
@@ -798,59 +1166,163 @@ export default function Dashboard() {
           action={primaryAction}
         />
 
+        <section className="metrics-grid">
+          <MetricCard
+            title="Total alerts"
+            value={formatNumber(alerts.length)}
+            description="Alert records returned by the API"
+            icon={Bell}
+          />
+
+          <MetricCard
+            title="Critical alerts"
+            value={formatNumber(criticalAlerts.length)}
+            description="Alerts marked critical"
+            icon={ShieldAlert}
+          />
+
+          <MetricCard
+            title="High alerts"
+            value={formatNumber(highAlerts.length)}
+            description="Alerts marked high severity"
+            icon={ShieldAlert}
+          />
+
+          <MetricCard
+            title="Suspicious flows"
+            value={formatNumber(suspiciousFlows.length)}
+            description="Flagged flows requiring review"
+            icon={Activity}
+          />
+        </section>
+
         <section className="panel">
           <div className="panel-heading">
             <div>
               <h2>Analysis alerts</h2>
               <p>Alert information from the current analysis response</p>
             </div>
+
             <Bell size={20} />
           </div>
 
           {!analysis ? (
             <EmptyState
-              title="No analysis available."
+              title="No analysis available"
               description="Upload a PCAP file before reviewing alerts."
+              action={primaryAction}
             />
           ) : alerts.length === 0 && suspiciousFlows.length === 0 ? (
             <EmptyState
-              title="No alert records returned."
-              description="No recognized alert entries or suspicious flow flags were found. This does not prove that the traffic is safe."
+              title="No alert records returned"
+              description="The latest response contains no recognized alert entries or suspicious flow flags. This does not prove the traffic is safe."
             />
           ) : (
             <>
               {alerts.length > 0 && (
-                <div className="table-scroll">
-                  <table className="flows-table">
-                    <thead>
-                      <tr>
-                        <th>Alert</th>
-                        <th>Severity</th>
-                        <th>Description</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {alerts.map((alert, index) => (
-                        <tr key={alert.id ?? index}>
-                          <td>
-                            {alert.title ?? alert.name ?? alert.type ?? "Alert"}
-                          </td>
-                          <td>{alert.severity ?? "Unspecified"}</td>
-                          <td>
-                            {alert.description ?? alert.message ?? "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="security-alert-list">
+                  {alerts.map((alert, index) => {
+                    const severity = getSeverity(alert);
+
+                    return (
+                      <article
+                        className="security-alert-item"
+                        key={alert.id ?? alert.alert_id ?? index}
+                      >
+                        <div className={`alert-severity-icon ${severity}`}>
+                          <ShieldAlert size={20} />
+                        </div>
+
+                        <div className="security-alert-content">
+                          <div className="security-alert-title-row">
+                            <h3>{getAlertTitle(alert)}</h3>
+                            <SeverityBadge severity={severity} />
+                          </div>
+
+                          <p>{getAlertDescription(alert)}</p>
+
+                          {(alert.source_ip || alert.src_ip) && (
+                            <span className="alert-detail">
+                              Source: {alert.source_ip ?? alert.src_ip}
+                            </span>
+                          )}
+
+                          {(alert.destination_ip || alert.dst_ip) && (
+                            <span className="alert-detail">
+                              Destination:{" "}
+                              {alert.destination_ip ?? alert.dst_ip}
+                            </span>
+                          )}
+
+                          {alert.protocol && (
+                            <span className="alert-detail">
+                              Protocol: {alert.protocol}
+                            </span>
+                          )}
+
+                          {(alert.timestamp || alert.created_at) && (
+                            <span className="alert-detail">
+                              <Clock size={12} />{" "}
+                              {formatDate(alert.timestamp ?? alert.created_at)}
+                            </span>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
 
               {suspiciousFlows.length > 0 && (
-                <>
-                  <h3>Flagged flows</h3>
-                  <FlowResults flows={suspiciousFlows} />
-                </>
+                <div className="security-suspicious-section">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Flagged network flows</h2>
+                      <p>
+                        {suspiciousFlows.length} suspicious flow records
+                        identified by recognized flags or labels
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="table-scroll">
+                    <table className="flows-table">
+                      <thead>
+                        <tr>
+                          <th>Source IP</th>
+                          <th>Destination IP</th>
+                          <th>Protocol</th>
+                          <th>Packets</th>
+                          <th>Bytes</th>
+                          <th>Classification</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {suspiciousFlows.map((flow, index) => (
+                          <tr key={flow.id ?? flow.flow_id ?? index}>
+                            <td>{getSourceIp(flow)}</td>
+                            <td>{getDestinationIp(flow)}</td>
+                            <td>{flow.protocol ?? "Unknown"}</td>
+                            <td>{formatNumber(flow.packet_count)}</td>
+                            <td>
+                              {formatBytes(
+                                flow.total_bytes ??
+                                  flow.bytes ??
+                                  flow.byte_count
+                              )}
+                            </td>
+                            <td>
+                              <SeverityBadge severity="high">
+                                Suspicious
+                              </SeverityBadge>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
             </>
           )}
@@ -891,6 +1363,7 @@ export default function Dashboard() {
               <h2>Recent reports</h2>
               <p>{history.length} reports currently loaded</p>
             </div>
+
             <FileText size={20} />
           </div>
 
@@ -898,8 +1371,9 @@ export default function Dashboard() {
             <p>Loading analysis history...</p>
           ) : history.length === 0 ? (
             <EmptyState
-              title="No analysis reports found."
+              title="No analysis reports found"
               description="Run a PCAP analysis and refresh the history."
+              action={primaryAction}
             />
           ) : (
             <div className="table-scroll">
@@ -912,17 +1386,14 @@ export default function Dashboard() {
                     <th>Created</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {history.map((report, index) => (
-                    <tr key={report.id ?? index}>
-                      <td>{report.id ?? "—"}</td>
+                    <tr key={report.id ?? report.report_id ?? index}>
+                      <td>{report.id ?? report.report_id ?? "—"}</td>
                       <td>{formatNumber(report.total_packets)}</td>
                       <td>{formatNumber(report.total_flows)}</td>
-                      <td>
-                        {report.created_at
-                          ? new Date(report.created_at).toLocaleString()
-                          : "—"}
-                      </td>
+                      <td>{formatDate(report.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -949,6 +1420,7 @@ export default function Dashboard() {
               <h2>Connection configuration</h2>
               <p>Current frontend API settings</p>
             </div>
+
             <Settings size={20} />
           </div>
 
@@ -957,6 +1429,7 @@ export default function Dashboard() {
               <strong>Backend URL</strong>
               <small>{API_BASE_URL}</small>
             </div>
+
             <span className="status-neutral">{backendStatus}</span>
           </div>
 
@@ -984,19 +1457,23 @@ export default function Dashboard() {
               <h2>Getting started</h2>
               <p>Basic workflow</p>
             </div>
+
             <CircleHelp size={20} />
           </div>
 
-          <ol>
+          <ol className="help-steps">
             <li>Start the FastAPI backend.</li>
-            <li>Open PCAP Analysis and select a .pcap or .pcapng file.</li>
+            <li>
+              Open PCAP Analysis and select a .pcap or .pcapng file.
+            </li>
             <li>Run the analysis and review the returned results.</li>
             <li>Use Traffic Monitoring to inspect extracted flows.</li>
+            <li>Review Security Alerts and AI Detection.</li>
             <li>Use Analysis History to review saved reports.</li>
           </ol>
 
           <div className="system-note">
-            Confirm that file-size limits and packet validation are also
+            Keep file-size limits, packet validation, and upload security
             enforced by the backend.
           </div>
         </section>
@@ -1008,26 +1485,50 @@ export default function Dashboard() {
     switch (activePage) {
       case "PCAP Analysis":
         return renderPcapAnalysis();
+
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
+
       case "AI Detection":
         return renderAiDetection();
+
       case "Security Alerts":
         return renderSecurityAlerts();
+
       case "Analysis History":
         return renderAnalysisHistory();
+
       case "Settings":
         return renderSettings();
+
       case "Help":
         return renderHelp();
+
       default:
         return renderOverview();
     }
   }
 
+  const searchablePages = [...navigation, ...preferenceNavigation];
+
+  const searchResults = searchQuery.trim()
+    ? searchablePages.filter((item) =>
+        item.label.toLowerCase().includes(searchQuery.trim().toLowerCase())
+      )
+    : [];
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {mobileMenuOpen && (
+        <button
+          type="button"
+          className="mobile-sidebar-backdrop"
+          aria-label="Close navigation menu"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
         <button
           type="button"
           className="brand"
@@ -1037,6 +1538,7 @@ export default function Dashboard() {
           <span className="brand-icon">
             <Shield size={23} />
           </span>
+
           <span>
             <strong>NetSentry</strong>
             <small>NETWORK INTELLIGENCE</small>
@@ -1058,6 +1560,10 @@ export default function Dashboard() {
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{label}</span>
+
+              {label === "Security Alerts" && alerts.length > 0 && (
+                <span className="nav-count">{alerts.length}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -1065,29 +1571,22 @@ export default function Dashboard() {
         <div className="sidebar-label tools-label">PREFERENCES</div>
 
         <nav className="navigation" aria-label="Preferences">
-          <button
-            type="button"
-            className={`nav-item ${
-              activePage === "Settings" ? "nav-active" : ""
-            }`}
-            aria-current={activePage === "Settings" ? "page" : undefined}
-            onClick={() => navigateTo("Settings")}
-          >
-            <Settings size={18} strokeWidth={1.8} />
-            <span>Settings</span>
-          </button>
-
-          <button
-            type="button"
-            className={`nav-item ${
-              activePage === "Help" ? "nav-active" : ""
-            }`}
-            aria-current={activePage === "Help" ? "page" : undefined}
-            onClick={() => navigateTo("Help")}
-          >
-            <CircleHelp size={18} strokeWidth={1.8} />
-            <span>Help &amp; documentation</span>
-          </button>
+          {preferenceNavigation.map(({ label, icon: Icon }) => (
+            <button
+              type="button"
+              key={label}
+              className={`nav-item ${
+                activePage === label ? "nav-active" : ""
+              }`}
+              aria-current={activePage === label ? "page" : undefined}
+              onClick={() => navigateTo(label)}
+            >
+              <Icon size={18} strokeWidth={1.8} />
+              <span>
+                {label === "Help" ? "Help & documentation" : label}
+              </span>
+            </button>
+          ))}
         </nav>
 
         <div className="sidebar-bottom">
@@ -1116,6 +1615,15 @@ export default function Dashboard() {
 
       <main className="main-content">
         <header className="topbar">
+          <button
+            type="button"
+            className="mobile-menu-button"
+            aria-label="Toggle navigation"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            {mobileMenuOpen ? <X size={21} /> : <Menu size={21} />}
+          </button>
+
           <div className="breadcrumb">
             Workspace <span>/</span> <strong>{activePage}</strong>
           </div>
@@ -1123,14 +1631,52 @@ export default function Dashboard() {
           <div className="topbar-actions">
             <BackendStatus />
 
-            <label className="search-box">
-              <Search size={17} />
-              <input
-                placeholder="Search dashboard..."
-                aria-label="Search dashboard"
-              />
-              <kbd>Ctrl K</kbd>
-            </label>
+            <div className="dashboard-search-wrapper">
+              <label className="search-box" htmlFor="dashboard-search">
+                <Search size={17} />
+
+                <input
+                  id="dashboard-search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search dashboard..."
+                  aria-label="Search dashboard pages"
+                  autoComplete="off"
+                />
+
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    className="search-clear"
+                    aria-label="Clear search"
+                    onClick={() => setSearchQuery("")}
+                  >
+                    <X size={15} />
+                  </button>
+                ) : (
+                  <kbd>Ctrl K</kbd>
+                )}
+              </label>
+
+              {searchQuery.trim() && (
+                <div className="search-results">
+                  {searchResults.length > 0 ? (
+                    searchResults.map(({ label, icon: Icon }) => (
+                      <button
+                        type="button"
+                        key={label}
+                        onClick={() => navigateTo(label)}
+                      >
+                        <Icon size={17} />
+                        <span>{label}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <p>No dashboard pages found.</p>
+                  )}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"
@@ -1139,15 +1685,48 @@ export default function Dashboard() {
               onClick={() => navigateTo("Security Alerts")}
             >
               <Bell size={19} />
+
+              {alerts.length > 0 && (
+                <span className="notification-dot" />
+              )}
             </button>
 
-            <div className="profile">
-              <div className="avatar">NS</div>
-              <div className="profile-info">
-                <strong>Network Admin</strong>
-                <small>Administrator</small>
-              </div>
-              <ChevronDown size={15} />
+            <div className="profile-wrapper">
+              <button
+                type="button"
+                className="profile profile-trigger"
+                aria-expanded={profileMenuOpen}
+                onClick={() => setProfileMenuOpen((open) => !open)}
+              >
+                <span className="avatar">NS</span>
+
+                <span className="profile-info">
+                  <strong>Network Admin</strong>
+                  <small>Administrator</small>
+                </span>
+
+                <ChevronDown size={15} />
+              </button>
+
+              {profileMenuOpen && (
+                <div className="profile-menu">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo("Settings")}
+                  >
+                    <Settings size={16} />
+                    Settings
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => navigateTo("Help")}
+                  >
+                    <CircleHelp size={16} />
+                    Help & documentation
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -1161,6 +1740,362 @@ export default function Dashboard() {
           </footer>
         </div>
       </main>
+
+      <style>{`
+        .security-alert-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .security-alert-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          padding: 16px;
+          border: 1px solid var(--border-color, #e2e8f0);
+          border-radius: 12px;
+          background: var(--panel-background, #fff);
+        }
+
+        .alert-severity-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          width: 42px;
+          height: 42px;
+          border-radius: 10px;
+        }
+
+        .alert-severity-icon.critical,
+        .severity-badge.critical {
+          color: #b91c1c;
+          background: #fee2e2;
+        }
+
+        .alert-severity-icon.high,
+        .severity-badge.high {
+          color: #c2410c;
+          background: #ffedd5;
+        }
+
+        .alert-severity-icon.medium,
+        .severity-badge.medium {
+          color: #a16207;
+          background: #fef3c7;
+        }
+
+        .alert-severity-icon.low,
+        .severity-badge.low {
+          color: #166534;
+          background: #dcfce7;
+        }
+
+        .security-alert-content {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .security-alert-title-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .security-alert-title-row h3 {
+          margin: 0;
+          font-size: 15px;
+          font-weight: 600;
+        }
+
+        .security-alert-content p {
+          margin: 8px 0;
+          color: var(--muted-text, #64748b);
+          font-size: 14px;
+        }
+
+        .severity-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 4px 9px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
+        .alert-detail {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          margin: 4px 12px 0 0;
+          color: var(--muted-text, #64748b);
+          font-size: 12px;
+          overflow-wrap: anywhere;
+        }
+
+        .security-suspicious-section {
+          margin-top: 28px;
+        }
+
+        .security-suspicious-section .panel-heading {
+          margin-top: 8px;
+        }
+
+        .nav-count {
+          margin-left: auto;
+          padding: 2px 7px;
+          border-radius: 999px;
+          color: #1d4ed8;
+          background: #dbeafe;
+          font-size: 11px;
+          font-weight: 700;
+        }
+
+        .dashboard-search-wrapper,
+        .profile-wrapper {
+          position: relative;
+        }
+
+        .search-results,
+        .profile-menu {
+          position: absolute;
+          top: calc(100% + 8px);
+          right: 0;
+          z-index: 100;
+          width: 240px;
+          padding: 6px;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          background: #fff;
+          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+        }
+
+        .search-results button,
+        .profile-menu button {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          padding: 10px;
+          border: 0;
+          border-radius: 8px;
+          color: #334155;
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .search-results button:hover,
+        .profile-menu button:hover {
+          background: #eff6ff;
+        }
+
+        .search-results p {
+          margin: 10px;
+          color: #64748b;
+          font-size: 13px;
+        }
+
+        .search-clear {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          color: #64748b;
+          background: transparent;
+          cursor: pointer;
+        }
+
+        .profile-trigger {
+          border: 0;
+          background: transparent;
+          cursor: pointer;
+          text-align: left;
+        }
+
+        .notification-dot {
+          position: absolute;
+          top: 5px;
+          right: 5px;
+          width: 8px;
+          height: 8px;
+          border: 2px solid #fff;
+          border-radius: 50%;
+          background: #dc2626;
+        }
+
+        .icon-button {
+          position: relative;
+        }
+
+        .mobile-menu-button,
+        .mobile-sidebar-backdrop {
+          display: none;
+        }
+
+        .help-steps li {
+          margin-bottom: 10px;
+          line-height: 1.6;
+        }
+
+        .response-details {
+          margin-top: 20px;
+          border-top: 1px solid #e2e8f0;
+          padding-top: 14px;
+        }
+
+        .response-details summary {
+          cursor: pointer;
+          font-weight: 600;
+        }
+
+        .response-details pre {
+          max-height: 420px;
+          overflow: auto;
+          padding: 14px;
+          border-radius: 10px;
+          background: #0f172a;
+          color: #e2e8f0;
+          font-size: 12px;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+
+        .traffic-chart-section {
+          margin-top: 24px;
+        }
+
+        @media (max-width: 900px) {
+          .mobile-menu-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            color: #334155;
+            background: #fff;
+            cursor: pointer;
+          }
+
+          .sidebar {
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 200;
+            width: min(290px, 85vw);
+            transform: translateX(-105%);
+            transition: transform 180ms ease;
+            overflow-y: auto;
+          }
+
+          .sidebar.sidebar-open {
+            transform: translateX(0);
+          }
+
+          .mobile-sidebar-backdrop {
+            display: block;
+            position: fixed;
+            inset: 0;
+            z-index: 190;
+            border: 0;
+            background: rgba(15, 23, 42, 0.42);
+          }
+
+          .main-content {
+            width: 100%;
+            margin-left: 0;
+          }
+
+          .topbar {
+            gap: 12px;
+          }
+
+          .topbar-actions {
+            min-width: 0;
+            gap: 10px;
+          }
+
+          .profile-info,
+          .profile-trigger > svg {
+            display: none;
+          }
+
+          .breadcrumb {
+            white-space: nowrap;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .topbar {
+            flex-wrap: wrap;
+            padding: 12px;
+          }
+
+          .breadcrumb {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .topbar-actions {
+            display: flex;
+            width: 100%;
+            justify-content: space-between;
+          }
+
+          .dashboard-search-wrapper {
+            flex: 1;
+            min-width: 0;
+          }
+
+          .search-box {
+            width: 100%;
+          }
+
+          .search-box kbd {
+            display: none;
+          }
+
+          .welcome-row {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 16px;
+          }
+
+          .security-alert-item {
+            padding: 12px;
+          }
+
+          .security-alert-title-row {
+            align-items: flex-start;
+          }
+
+          .metrics-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .table-scroll {
+            overflow-x: auto;
+          }
+
+          .flows-table {
+            min-width: 600px;
+          }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .sidebar {
+            transition: none;
+          }
+        }
+      `}</style>
     </div>
   );
 }

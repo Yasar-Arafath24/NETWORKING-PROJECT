@@ -124,3 +124,18 @@ export async function getSecurityAlerts({ limit = 100 } = {}) {
     `${API_BASE_URL}/api/v1/monitoring/history/alerts?${params}`
   );
 }
+
+export async function getLatestTraffic() {
+  const response = await fetch(`${API_BASE_URL}/api/v1/pcap/traffic`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Traffic request failed: ${response.status}`);
+  }
+
+  return response.json();
+}
