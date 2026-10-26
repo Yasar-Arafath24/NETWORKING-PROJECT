@@ -9,6 +9,7 @@ export default function StatCard({
   accent = false,
 }) {
   return (
+    <>
     <article className="stat-card">
       <div className="stat-card__top">
         <span className="stat-card__title">{title}</span>
@@ -27,5 +28,6 @@ export default function StatCard({
         <ArrowUpRight size={16} aria-hidden="true" />
       </div>
     </article>
+    </>
   );
 }
