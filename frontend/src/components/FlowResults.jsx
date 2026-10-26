@@ -330,6 +330,8 @@ export default function FlowResults({ flows = [] }) {
           <tbody>
             {filteredFlows.map((flow, index) => {
               const classification = getClassification(flow);
+              const displayLabel =
+                flow.label ?? (flow.anomaly ? "anomaly" : "normal");
               const protocol = getProtocol(flow);
               const [source, destination] = getEndpoints(flow);
               const score = getScore(flow);
@@ -358,21 +360,30 @@ export default function FlowResults({ flows = [] }) {
                       )}
                     </td>
                     <td>{formatDuration(flow.duration)}</td>
-                    <td>{score === null ? "—" : score.toFixed(6)}</td>
+                    <td>
+                      {flow.anomaly_score != null ? (
+                        <span>
+                          Anomaly score:{" "}
+                          {Number(flow.anomaly_score).toFixed(6)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td>
                       {classification === "SUSPICIOUS" ? (
                         <span className="flow-classification suspicious">
                           <ShieldAlert size={14} />
-                          Suspicious
+                          <span>{displayLabel}</span>
                         </span>
                       ) : classification === "NORMAL" ? (
                         <span className="flow-classification normal">
                           <ShieldCheck size={14} />
-                          Normal
+                          <span>{displayLabel}</span>
                         </span>
                       ) : (
                         <span className="flow-classification unavailable">
-                          Unavailable
+                          <span>{displayLabel}</span>
                         </span>
                       )}
                     </td>
