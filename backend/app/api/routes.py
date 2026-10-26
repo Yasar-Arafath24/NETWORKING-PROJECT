@@ -1,4 +1,5 @@
 
+from ml.anomaly_service import predict_anomalies
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -281,7 +282,6 @@ async def analyze_pcap_upload(
             ) from exc
 
         from backend.app.services.pcap_service import analyze_pcap
-        from ml.anomaly_service import predict_anomalies
 
         try:
             analysis = analyze_pcap(temp_path)
@@ -301,6 +301,9 @@ async def analyze_pcap_upload(
                 "total_flows": analysis["total_flows"],
                 "flows_returned": 0,
                 "flows": [],
+                "suspicious_flows": 0,
+                "anomalies_detected": 0,
+                "anomaly_count": 0,
                 "traffic_summary": {
                     "total_flows_analyzed": 0,
                     "normal_flows": 0,
@@ -326,26 +329,19 @@ async def analyze_pcap_upload(
 
         predictions = predict_anomalies(flows)
 
-        indexed_predictions = {
-            item["flow_index"]: item
-            for item in predictions
-        }
+        if len(predictions) != len(flows):
+            raise HTTPException(
+                status_code=500,
+                detail="AI prediction count does not match flow count.",
+            )
 
-        enriched_flows = []
+        for flow, prediction in zip(flows, predictions):
+            flow.update(prediction)
 
-        for index, flow in enumerate(flows):
-            prediction = indexed_predictions.get(index, {})
-
-            enriched_flows.append({
-                **flow,
-                "anomaly": prediction.get("anomaly"),
-                "label": prediction.get("label", "UNAVAILABLE"),
-                "anomaly_score": prediction.get("anomaly_score"),
-            })
+        enriched_flows = flows
 
         suspicious_count = sum(
-            flow["label"] == "SUSPICIOUS"
-            for flow in enriched_flows
+            1 for prediction in predictions if prediction["anomaly"]
         )
 
         normal_count = sum(
@@ -365,6 +361,9 @@ async def analyze_pcap_upload(
             "total_flows": analysis["total_flows"],
             "flows_returned": len(enriched_flows),
             "flows": enriched_flows,
+            "suspicious_flows": suspicious_count,
+            "anomalies_detected": suspicious_count,
+            "anomaly_count": suspicious_count,
             "traffic_summary": {
                 "total_flows_analyzed": len(enriched_flows),
                 "normal_flows": normal_count,

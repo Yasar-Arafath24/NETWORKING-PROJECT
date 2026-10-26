@@ -4,6 +4,7 @@ from backend.app.api.routes import health_check, router
 from backend.app.services.database import Base, engine
 from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
+from backend.app.services.analysis_history import initialize_history_db
 
 Base.metadata.create_all(bind=engine)
 
