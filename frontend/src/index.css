@@ -81,6 +81,128 @@ button:disabled {
   background: var(--color-primary);
 }
 
+.netsentry-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #172033;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(100, 116, 139, .09), transparent 23%),
+    #f8fafc;
+  animation: netsentry-loader-enter 500ms ease both;
+}
+
+.netsentry-loader-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  border-radius: 19px;
+  color: #fff;
+  background: linear-gradient(145deg, #172033 0%, #29415f 100%);
+  box-shadow: 0 18px 40px rgba(23, 32, 51, .18);
+  animation: netsentry-logo-breathe 1.6s ease-in-out infinite;
+}
+
+.netsentry-loader-mark svg {
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .18));
+}
+
+.netsentry-loader-orbit {
+  position: absolute;
+  width: 53px;
+  height: 53px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 50%;
+  animation: netsentry-orbit 3s linear infinite;
+}
+
+.netsentry-loader-signal {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid #172033;
+  border-radius: 50%;
+  background: #69dba0;
+  box-shadow: 0 0 0 4px rgba(105, 219, 160, .13);
+}
+
+.netsentry-loader strong {
+  font-size: 24px;
+  letter-spacing: -.8px;
+}
+
+.netsentry-loader strong span {
+  margin-left: 2px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.netsentry-loader p {
+  margin: 8px 0 18px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.netsentry-loader-progress {
+  width: 150px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe4eb;
+}
+
+.netsentry-loader-progress span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left;
+  background: linear-gradient(90deg, #172033, #64748b);
+  animation: netsentry-load-progress 3s cubic-bezier(.4, 0, .2, 1) both;
+}
+
+@keyframes netsentry-loader-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes netsentry-logo-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-3px) scale(1.02); }
+}
+
+@keyframes netsentry-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes netsentry-load-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .netsentry-loader,
+  .netsentry-loader-mark,
+  .netsentry-loader-orbit,
+  .netsentry-loader-progress span {
+    animation-duration: 1ms;
+  }
+}
+
 .traffic-monitor-section {
   width: 100%;
   min-width: 0;
