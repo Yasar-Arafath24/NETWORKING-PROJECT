@@ -139,3 +139,80 @@ export async function getLatestTraffic() {
 
   return response.json();
 }
+
+/**
+ * Start live network capture.
+ */
+export async function startLiveCapture(iface = null) {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ interface: iface }),
+  });
+}
+
+/**
+ * Start PCAP replay for live monitoring.
+ */
+export async function startPcapReplay(pcapPath, speed = 1.0) {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/replay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pcap_path: pcapPath, speed }),
+  });
+}
+
+/**
+ * Stop live monitoring.
+ */
+export async function stopLiveMonitoring() {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * Get live monitoring status.
+ */
+export async function getLiveMonitoringStatus() {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/status`);
+}
+
+/**
+ * Get network interfaces available for live capture.
+ */
+export async function getLiveCaptureInterfaces() {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/interfaces`);
+}
+
+/**
+ * Get live flows from active monitoring.
+ */
+export async function getLiveFlows(limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/flows?${params}`);
+}
+
+/**
+ * Get live packets from active monitoring.
+ */
+export async function getLivePackets(limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/packets?${params}`);
+}
+
+/**
+ * Get live detection status.
+ */
+export async function getLiveDetectionStatus() {
+  return request(`${API_BASE_URL}/api/v1/monitoring/live/detection-status`);
+}
+
+/**
+ * Get persisted live flows.
+ */
+export async function getPersistedLiveFlows(limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`${API_BASE_URL}/api/v1/monitoring/history/flows?${params}`);
+}

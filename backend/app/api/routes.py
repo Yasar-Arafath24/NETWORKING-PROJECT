@@ -775,10 +775,15 @@ def stop_live_monitoring():
 
     monitor.stop()
 
+    from backend.app.services.live_detection import live_detection
+
+    detection_status = live_detection.stop()
+
     return {
         "status": "success",
         "message": "Monitoring stop requested.",
         "monitor": monitor.status(),
+        "detection": detection_status,
     }
 
 
@@ -791,21 +796,64 @@ def get_live_monitoring_status():
     return monitor.status()
 
 
+@router.get("/monitoring/live/interfaces")
+def get_live_capture_interfaces():
+    """Return network interfaces that can be used for packet capture."""
+    try:
+        from scapy.all import get_if_list
+
+        interfaces = [name for name in get_if_list() if name]
+    except Exception:
+        interfaces = []
+
+    return {"status": "success", "interfaces": interfaces}
+
+
 @router.get("/monitoring/live/flows")
 def get_live_monitoring_flows(
     limit: int = Query(default=100, ge=1, le=1000),
+    db: Session = Depends(get_db),
 ):
-    """Return observed network flows."""
+    """Return observed network flows, enriched with ML classifications."""
 
     from backend.app.services.live_monitor import monitor
+    from backend.app.models.live_monitoring import LiveFlowRecord
 
     flows = monitor.get_flows(limit=limit)
+    monitor_status = monitor.status()
+    session_id = monitor_status.get("started_at")
+
+    assessments = {}
+    if session_id:
+        records = (
+            db.query(LiveFlowRecord)
+            .filter(LiveFlowRecord.session_id == session_id)
+            .all()
+        )
+        assessments = {record.flow_id: record for record in records}
+
+    enriched_flows = []
+    for flow in flows:
+        record = assessments.get(int(flow["flow_id"]))
+        if record is None:
+            enriched_flows.append({**flow, "classification": "UNASSESSED"})
+            continue
+
+        enriched_flows.append({
+            **flow,
+            "classification": record.label,
+            "label": record.label,
+            "anomaly": record.anomaly,
+            "is_anomaly": record.anomaly,
+            "is_suspicious": record.anomaly,
+            "anomaly_score": record.anomaly_score,
+        })
 
     return {
         "status": "success",
-        "monitor": monitor.status(),
-        "total_flows_returned": len(flows),
-        "flows": flows,
+        "monitor": monitor_status,
+        "total_flows_returned": len(enriched_flows),
+        "flows": enriched_flows,
     }
 
 

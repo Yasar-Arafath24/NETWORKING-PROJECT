@@ -38,6 +38,7 @@ import {
 import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
+import RealtimeTrafficMonitor from "./RealtimeTrafficMonitor";
 
 import {
   uploadPcap,
@@ -49,6 +50,7 @@ const navigation = [
   { label: "Overview", icon: LayoutDashboard },
   { label: "PCAP Analysis", icon: FileSearch },
   { label: "Traffic Monitoring", icon: Activity },
+  { label: "Real-Time Traffic", icon: Wifi },
   { label: "AI Detection", icon: ShieldAlert },
   { label: "Security Alerts", icon: Bell },
   { label: "Analysis History", icon: FileText },
@@ -57,6 +59,40 @@ const navigation = [
 const preferenceNavigation = [
   { label: "Settings", icon: Settings },
   { label: "Help", icon: CircleHelp },
+];
+
+function GithubIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true">
+      <path d="M12 .7A11.5 11.5 0 0 0 8.36 23.1c.58.1.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.52-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.38.97.1-.75.41-1.27.74-1.56-2.57-.29-5.28-1.29-5.28-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.16 1.18A11 11 0 0 1 12 6.11c.98 0 1.96.13 2.88.39 2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.71 5.38-5.29 5.67.42.36.79 1.06.79 2.14v3.27c0 .31.21.67.79.56A11.5 11.5 0 0 0 12 .7Z" />
+    </svg>
+  );
+}
+
+function LinkedInIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true">
+      <path d="M5.2 7.8H1.7V22h3.5V7.8ZM3.45 1A2.06 2.06 0 1 0 3.45 5.12 2.06 2.06 0 0 0 3.45 1ZM22.3 13.62c0-4.26-2.27-6.24-5.31-6.24a4.58 4.58 0 0 0-4.15 2.28V7.8H9.33V22h3.51v-7.03c0-1.86.35-3.66 2.65-3.66 2.27 0 2.3 2.12 2.3 3.78V22h3.51v-8.38Z" />
+    </svg>
+  );
+}
+
+const developers = [
+  {
+    name: "Yasar Arafath",
+    linkedin: "https://www.linkedin.com/in/yasar-arafath-365490333/",
+    github: "https://github.com/Yasar-Arafath24",
+  },
+  {
+    name: "Moohamed Thavubik",
+    linkedin: "https://www.linkedin.com/in/moohamed-thavubik-444554308/",
+    github: "https://github.com/mohamedthoufik003",
+  },
+  {
+    name: "Mohamed Imran",
+    linkedin: "https://www.linkedin.com/in/-techie-imran",
+    github: "https://github.com/Techie-Imran",
+  },
 ];
 
 function formatNumber(value) {
@@ -1038,6 +1074,20 @@ export default function Dashboard() {
     );
   }
 
+  function renderRealtimeTraffic() {
+    return (
+      <>
+        <PageHeading
+          eyebrow="NETWORK VISIBILITY"
+          title="Real-Time Traffic Monitoring"
+          description="Live web traffic monitoring with packet capture and flow analysis."
+          action={primaryAction}
+        />
+        <RealtimeTrafficMonitor />
+      </>
+    );
+  }
+
   function renderAiDetection() {
     return (
       <>
@@ -1489,6 +1539,9 @@ export default function Dashboard() {
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
 
+      case "Real-Time Traffic":
+        return renderRealtimeTraffic();
+
       case "AI Detection":
         return renderAiDetection();
 
@@ -1535,8 +1588,10 @@ export default function Dashboard() {
           onClick={() => navigateTo("Overview")}
           aria-label="Go to NetSentry overview"
         >
-          <span className="brand-icon">
-            <Shield size={23} />
+          <span className="brand-icon" aria-hidden="true">
+            <span className="brand-icon-orbit" />
+            <Shield size={21} strokeWidth={1.8} />
+            <span className="brand-icon-signal" />
           </span>
 
           <span>
@@ -1734,14 +1789,188 @@ export default function Dashboard() {
         <div className="dashboard-content" key={activePage}>
           {renderPage()}
 
-          <footer className="dashboard-footer">
-            <span>NetSentry AI · Network traffic analysis</span>
-            <span>Development environment</span>
+          <footer className="developers-footer">
+            <div className="developers-footer-heading">
+              <span>NETSENTRY TEAM</span>
+              <h2>Meet the developers</h2>
+              <p>The Team behind NetSentry AI.</p>
+            </div>
+            <div className="developer-grid">
+              {developers.map((developer, index) => (
+                <article className="developer-card" key={developer.name}>
+                  <div className="developer-avatar" aria-hidden="true">
+                    {developer.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}
+                  </div>
+                  <div className="developer-info">
+                    <span>Developer {index + 1}</span>
+                    <strong>{developer.name}</strong>
+                  </div>
+                  <div className="developer-links">
+                    <a href={developer.linkedin} target="_blank" rel="noreferrer" aria-label={`${developer.name} on LinkedIn`}>
+                      <LinkedInIcon />
+                    </a>
+                    <a href={developer.github} target="_blank" rel="noreferrer" aria-label={`${developer.name} on GitHub`}>
+                      <GithubIcon />
+                    </a>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div className="developers-footer-bottom">
+              <span>NetSentry AI · Network traffic analysis</span>
+              <span>Built for clearer network visibility</span>
+            </div>
           </footer>
         </div>
       </main>
 
       <style>{`
+        .topbar {
+          position: relative;
+          isolation: isolate;
+        }
+        .topbar::after {
+          content: "";
+          position: absolute;
+          right: 0;
+          bottom: -1px;
+          left: 0;
+          height: 1px;
+          transform: scaleX(.18);
+          transform-origin: left;
+          background: linear-gradient(90deg, #172033, #64748b, transparent);
+          animation: topbar-signal 4s ease-in-out infinite alternate;
+        }
+        @keyframes topbar-signal {
+          from { transform: scaleX(.18); opacity: .45; }
+          to { transform: scaleX(1); opacity: .85; }
+        }
+        .developers-footer {
+          margin-top: 44px;
+          padding-top: 28px;
+          border-top: 1px solid #e2e8f0;
+        }
+        .developers-footer-heading > span {
+          color: #64748b;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 1.5px;
+        }
+        .developers-footer-heading h2 {
+          margin: 7px 0 3px;
+          color: #0f172a;
+          font-size: 20px;
+          letter-spacing: -.6px;
+        }
+        .developers-footer-heading p {
+          margin: 0;
+          color: #64748b;
+          font-size: 12px;
+        }
+        .developer-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 10px;
+          margin-top: 18px;
+        }
+        .developer-card {
+          position: relative;
+          display: grid;
+          grid-template-columns: 42px minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 11px;
+          min-width: 0;
+          padding: 13px;
+          overflow: hidden;
+          border: 1px solid #e5e7eb;
+          border-radius: 9px;
+          background: #fff;
+          transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+        }
+        .developer-card::before {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: 2px;
+          background: #172033;
+          transform: scaleY(0);
+          transition: transform .2s ease;
+        }
+        .developer-card:hover {
+          transform: translateY(-2px);
+          border-color: #cbd5e1;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, .07);
+        }
+        .developer-card:hover::before { transform: scaleY(1); }
+        .developer-avatar {
+          display: grid;
+          place-items: center;
+          width: 42px;
+          height: 42px;
+          border-radius: 50%;
+          color: #fff;
+          background: #172033;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: .5px;
+        }
+        .developer-info { min-width: 0; }
+        .developer-info span {
+          display: block;
+          margin-bottom: 3px;
+          color: #94a3b8;
+          font-size: 9px;
+          font-weight: 700;
+          letter-spacing: .7px;
+          text-transform: uppercase;
+        }
+        .developer-info strong {
+          display: block;
+          overflow: hidden;
+          color: #1e293b;
+          font-size: 12px;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .developer-links { display: flex; gap: 5px; }
+        .developer-links a {
+          display: grid;
+          place-items: center;
+          width: 32px;
+          height: 32px;
+          border: 1px solid #e2e8f0;
+          border-radius: 7px;
+          color: #475569;
+          background: #fff;
+          transition: color .2s ease, border-color .2s ease, transform .2s ease;
+        }
+        .developer-links a:hover {
+          color: #172033;
+          border-color: #94a3b8;
+          transform: translateY(-2px);
+        }
+        .developers-footer-bottom {
+          display: flex;
+          justify-content: space-between;
+          gap: 15px;
+          padding: 18px 0 3px;
+          margin-top: 22px;
+          border-top: 1px solid #edf0f4;
+          color: #94a3b8;
+          font-size: 10px;
+        }
+        @media (max-width: 1050px) {
+          .developer-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 600px) {
+          .developers-footer { margin-top: 30px; }
+          .developer-card { grid-template-columns: 38px minmax(0, 1fr) auto; padding: 11px; }
+          .developer-avatar { width: 38px; height: 38px; }
+          .developers-footer-bottom { flex-direction: column; gap: 5px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .topbar::after { animation: none; transform: scaleX(1); }
+        }
         .security-alert-list {
           display: flex;
           flex-direction: column;
