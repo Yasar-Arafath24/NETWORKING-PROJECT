@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Globe2, KeyRound, Plus, Radio, RefreshCw, Trash2 } from "lucide-react";
-import { addWebsite, deleteWebsite, getWebsiteEvents, getWebsites, setWebsiteEnabled, websiteLiveUrl } from "../services/api";
+import { API_BASE_URL, addWebsite, deleteWebsite, getWebsiteEvents, getWebsites, setWebsiteEnabled, websiteLiveUrl } from "../services/api";
 
 function timeLabel(value) { return new Date(value).toLocaleTimeString(); }
 
@@ -139,9 +139,11 @@ export default function WebsiteMonitoring({ embedded = false }) {
           {error && <div className="website-error" role="alert">{error}</div>}
           {newSite && <section className="website-token-card">
             <div><KeyRound size={19} /><strong>Save this ingestion key now</strong></div>
-            <p>It is shown only once. Install it as a server-side secret in your site's log collector; never put it in browser JavaScript.</p>
+            <p>It is shown only once. Install it as a server-side secret in your site's generic log collector; never put it in browser JavaScript.</p>
             <code>{newSite.token}</code>
-            <p>Send request records to <code>/api/v1/website-ingest/{newSite.id}/events</code> with an Authorization: Bearer header.</p>
+            <p>Generic JSONL collector command:</p>
+            <code>{`$env:NETSENTRY_INGEST_TOKEN="${newSite.token}"; python scripts/generic_traffic_collector.py --site-id ${newSite.id} --api-url ${API_BASE_URL} --log-file "C:/logs/access.jsonl" --format jsonl`}</code>
+            <p>Each log line can be JSON containing <code>status_code</code>, plus optional path, method, duration_ms, response_bytes, source_ip, and user_agent.</p>
             <button className="secondary-button" onClick={() => setNewSite(null)}>I saved the key</button>
           </section>}
           {selected ? <>
@@ -172,9 +174,10 @@ export default function WebsiteMonitoring({ embedded = false }) {
             {summary.suspicious > 0 && <section className="website-alert-note"><AlertTriangle size={18} /><span>Heuristic detections are provisional. 4xx/5xx responses and request-volume bursts are flagged with a reason; these are signals to investigate, not confirmed attacks.</span></section>}
             <div className="website-actions"><button className="secondary-button danger-action" onClick={removeSite}><Trash2 size={14} /> Remove website and its event history</button></div>
           </> : <section className="panel website-empty"><Globe2 size={25} /><h2>No website selected</h2><p>Add an authorized website to set up its traffic feed.</p></section>}
-          <section className="panel website-setup"><h2>Connect your server logs</h2>
-            <p>Adding a URL does not grant access to visitor traffic. Configure your reverse proxy, web server, or authorized monitoring agent to POST one event per request to the ingestion endpoint using the one-time key. The API stores request metadata only; it does not fetch or scan the website.</p>
-            <p>Required field: <code>status_code</code>. Optional fields: <code>path</code>, <code>method</code>, <code>duration_ms</code>, <code>response_bytes</code>, <code>source_ip</code>, <code>user_agent</code>.</p>
+          <section className="panel website-setup"><h2>Connect server logs</h2>
+            <p>Add an authorized website, then run the included generic collector on the server. It supports JSONL records and optional Apache, Nginx, or IIS text parsing adapters. It tails the configured log and sends normalized request metadata to NetSentry.</p>
+            <p><code>python scripts/generic_traffic_collector.py --site-id SITE_ID --token INGESTION_TOKEN --log-file "/path/to/access.jsonl" --format jsonl</code></p>
+            <p>Adapters: <code>--format jsonl</code>, <code>apache</code>, <code>nginx</code>, or <code>iis</code>. The Python process must be able to read the log file.</p>
           </section>
         </div>
       </div>
