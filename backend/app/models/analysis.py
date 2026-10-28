@@ -1,7 +1,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, JSON, String
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.services.database import Base
@@ -12,6 +12,9 @@ class AnalysisReport(Base):
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, index=True
+    )
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     total_packets: Mapped[int] = mapped_column(
         Integer, default=0

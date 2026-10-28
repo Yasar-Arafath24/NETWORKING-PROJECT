@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.models.analysis import AnalysisReport
+from backend.app.models.user import User
+from backend.app.api.auth_routes import get_current_user
 from backend.app.services.database import get_db
 
 
@@ -15,8 +17,9 @@ router = APIRouter(
 def get_history(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    query = db.query(AnalysisReport)
+    query = db.query(AnalysisReport).filter(AnalysisReport.owner_id == user.id)
     reports = (
         query.order_by(AnalysisReport.id.desc())
         .limit(limit)
@@ -47,10 +50,11 @@ def get_history(
 def get_history_item(
     analysis_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     report = (
         db.query(AnalysisReport)
-        .filter(AnalysisReport.id == analysis_id)
+        .filter(AnalysisReport.id == analysis_id, AnalysisReport.owner_id == user.id)
         .first()
     )
 

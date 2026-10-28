@@ -39,10 +39,12 @@ import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
 import RealtimeTrafficMonitor from "./RealtimeTrafficMonitor";
+import WebsiteMonitoring from "./WebsiteMonitoring";
 
 import {
   uploadPcap,
   getAnalysisHistory,
+  checkBackendConnection,
   API_BASE_URL,
 } from "../services/api";
 
@@ -352,7 +354,7 @@ function SeverityBadge({ severity = "medium", children }) {
   );
 }
 
-export default function Dashboard() {
+export default function Dashboard({ user = null }) {
   const [uploadingPcap, setUploadingPcap] = useState(false);
   const [analysis, setAnalysis] = useState(null);
 
@@ -379,7 +381,6 @@ export default function Dashboard() {
 
       setHistory(getHistoryReports(result));
       setHistoryError("");
-      setBackendStatus("Connected");
     } catch (error) {
       setHistoryError(
         error instanceof Error
@@ -387,7 +388,6 @@ export default function Dashboard() {
           : "Unable to load analysis history."
       );
 
-      setBackendStatus("Unavailable");
     } finally {
       setHistoryLoading(false);
     }
@@ -396,6 +396,24 @@ export default function Dashboard() {
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  useEffect(() => {
+    let active = true;
+    const checkBackend = async () => {
+      try {
+        await checkBackendConnection();
+        if (active) setBackendStatus("Connected");
+      } catch {
+        if (active) setBackendStatus("Unavailable");
+      }
+    };
+    checkBackend();
+    const timer = window.setInterval(checkBackend, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     function handleShortcut(event) {
@@ -945,9 +963,11 @@ export default function Dashboard() {
         <PageHeading
           eyebrow="NETWORK VISIBILITY"
           title="Traffic Monitoring"
-          description="Inspect the flows extracted from your latest PCAP analysis."
+          description="Watch authorized website requests arrive live and review flow data from your latest PCAP analysis."
           action={primaryAction}
         />
+
+        <WebsiteMonitoring embedded />
 
         <section className="panel">
           <div className="panel-heading">
@@ -1753,11 +1773,11 @@ export default function Dashboard() {
                 aria-expanded={profileMenuOpen}
                 onClick={() => setProfileMenuOpen((open) => !open)}
               >
-                <span className="avatar">NS</span>
+                <span className="avatar">{(user?.name || "NS").split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
 
                 <span className="profile-info">
-                  <strong>Network Admin</strong>
-                  <small>Administrator</small>
+                  <strong>{user?.name || "NetSentry user"}</strong>
+                  <small>{user?.email || "User account"}</small>
                 </span>
 
                 <ChevronDown size={15} />

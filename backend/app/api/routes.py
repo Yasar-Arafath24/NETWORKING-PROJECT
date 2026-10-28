@@ -24,6 +24,8 @@ from backend.app.services.analysis_store import (
 )
 from backend.app.services.database import get_db
 from backend.app.models.analysis import AnalysisReport
+from backend.app.models.user import User
+from backend.app.api.auth_routes import get_current_user
 from backend.app.core.upload_validation import (
     MAX_UPLOAD_SIZE,
     validate_pcap_upload,
@@ -75,10 +77,11 @@ class LiveCaptureRequest(BaseModel):
 # DATABASE REPORT HELPER
 # ==================================================
 
-def persist_analysis(response: dict, db: Session) -> int:
+def persist_analysis(response: dict, db: Session, owner_id: int) -> int:
     """Persist an analysis response and return its report ID."""
 
     report = AnalysisReport(
+        owner_id=owner_id,
         total_packets=int(response.get("total_packets", 0)),
         total_flows=int(response.get("total_flows", 0)),
         report_data=jsonable_encoder(response),
@@ -226,6 +229,7 @@ def calculate_risk_assessment(
 async def analyze_pcap_upload(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     original_filename = file.filename or ""
     extension = Path(original_filename).suffix.lower()
@@ -321,7 +325,7 @@ async def analyze_pcap_upload(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            report_id = persist_analysis(response, db)
+            report_id = persist_analysis(response, db, user.id)
             response["report_id"] = report_id
             save_analysis(response)
 
@@ -390,7 +394,7 @@ async def analyze_pcap_upload(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        report_id = persist_analysis(response, db)
+        report_id = persist_analysis(response, db, user.id)
         response["report_id"] = report_id
         save_analysis(response)
 
@@ -422,9 +426,22 @@ async def analyze_pcap_upload(
 # EXISTING IN-MEMORY MONITORING ENDPOINTS
 # ==================================================
 
+def get_user_latest_analysis(db: Session, user: User) -> dict | None:
+    report = (
+        db.query(AnalysisReport)
+        .filter(AnalysisReport.owner_id == user.id)
+        .order_by(AnalysisReport.id.desc())
+        .first()
+    )
+    return report.report_data if report else None
+
+
 @router.get("/monitoring/latest")
-def get_latest_monitoring_report():
-    report = get_latest_analysis()
+def get_latest_monitoring_report(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    report = get_user_latest_analysis(db, user)
 
     if report is None:
         raise HTTPException(
@@ -436,8 +453,11 @@ def get_latest_monitoring_report():
 
 
 @router.get("/monitoring/suspicious")
-def get_suspicious_flows():
-    report = get_latest_analysis()
+def get_suspicious_flows(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    report = get_user_latest_analysis(db, user)
 
     if report is None:
         raise HTTPException(
@@ -464,8 +484,10 @@ def filter_flows(
         default="all",
         pattern="^(all|normal|suspicious)$",
     ),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    report = get_latest_analysis()
+    report = get_user_latest_analysis(db, user)
 
     if report is None:
         raise HTTPException(
@@ -497,8 +519,11 @@ def filter_flows(
 
 
 @router.get("/monitoring/export")
-def export_latest_report():
-    report = get_latest_analysis()
+def export_latest_report(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    report = get_user_latest_analysis(db, user)
 
     if report is None:
         raise HTTPException(
@@ -525,8 +550,9 @@ def get_analysis_history(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    query = db.query(AnalysisReport)
+    query = db.query(AnalysisReport).filter(AnalysisReport.owner_id == user.id)
 
     reports = (
         query.order_by(AnalysisReport.id.desc())
@@ -555,10 +581,11 @@ def get_analysis_history(
 def get_analysis_history_item(
     report_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     report = (
         db.query(AnalysisReport)
-        .filter(AnalysisReport.id == report_id)
+        .filter(AnalysisReport.id == report_id, AnalysisReport.owner_id == user.id)
         .first()
     )
 
@@ -584,11 +611,13 @@ def get_analysis_history_item(
 @router.get("/monitoring/statistics")
 def get_monitoring_statistics(
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Summarize saved PCAP analysis reports."""
 
     reports = (
         db.query(AnalysisReport)
+        .filter(AnalysisReport.owner_id == user.id)
         .order_by(AnalysisReport.id.desc())
         .all()
     )
@@ -656,7 +685,7 @@ def get_monitoring_statistics(
 # ==================================================
 
 @router.post("/monitoring/live/start")
-def start_live_monitoring(request: LiveCaptureRequest):
+def start_live_monitoring(request: LiveCaptureRequest, user: User = Depends(get_current_user)):
     """Start live packet capture."""
 
     from backend.app.services.live_monitor import monitor
@@ -687,7 +716,7 @@ def start_live_monitoring(request: LiveCaptureRequest):
 
 
 @router.post("/monitoring/live/replay")
-def replay_pcap_monitoring(request: LiveReplayRequest):
+def replay_pcap_monitoring(request: LiveReplayRequest, user: User = Depends(get_current_user)):
     """Start replay of an existing PCAP or PCAPNG file."""
 
     from backend.app.services.live_monitor import monitor
@@ -768,7 +797,7 @@ def replay_pcap_monitoring(request: LiveReplayRequest):
 
 
 @router.post("/monitoring/live/stop")
-def stop_live_monitoring():
+def stop_live_monitoring(user: User = Depends(get_current_user)):
     """Request the active capture or replay to stop."""
 
     from backend.app.services.live_monitor import monitor
@@ -788,7 +817,7 @@ def stop_live_monitoring():
 
 
 @router.get("/monitoring/live/status")
-def get_live_monitoring_status():
+def get_live_monitoring_status(user: User = Depends(get_current_user)):
     """Return live-monitor status and packet counters."""
 
     from backend.app.services.live_monitor import monitor
@@ -797,7 +826,7 @@ def get_live_monitoring_status():
 
 
 @router.get("/monitoring/live/interfaces")
-def get_live_capture_interfaces():
+def get_live_capture_interfaces(user: User = Depends(get_current_user)):
     """Return network interfaces that can be used for packet capture."""
     try:
         from scapy.all import get_if_list
@@ -813,6 +842,7 @@ def get_live_capture_interfaces():
 def get_live_monitoring_flows(
     limit: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Return observed network flows, enriched with ML classifications."""
 
@@ -860,6 +890,7 @@ def get_live_monitoring_flows(
 @router.get("/monitoring/live/packets")
 def get_live_monitoring_packets(
     limit: int = Query(default=100, ge=1, le=1000),
+    user: User = Depends(get_current_user),
 ):
     """Return recent packet metadata without payloads."""
 
@@ -882,6 +913,7 @@ def get_live_monitoring_packets(
 def get_persisted_live_flows(
     limit: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Return flow assessments saved in the database."""
 
@@ -926,6 +958,7 @@ def get_persisted_live_flows(
 def get_persisted_network_alerts(
     limit: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Return persisted suspicious-flow alerts."""
 
@@ -959,7 +992,7 @@ def get_persisted_network_alerts(
 
 
 @router.get("/monitoring/live/detection-status")
-def get_live_detection_status():
+def get_live_detection_status(user: User = Depends(get_current_user)):
     """Return the background detection worker status."""
 
     from backend.app.services.live_detection import live_detection

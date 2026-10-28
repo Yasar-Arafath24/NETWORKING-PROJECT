@@ -1,14 +1,13 @@
 
-// Base URL for the NetSentry backend API.
-// Configure it with VITE_API_BASE_URL in frontend/.env; it falls back to the
-// local development backend so the app works out of the box.
-const API_BASE_URL = (
-  import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
+// Vite proxies /api/v1 to the IPv4 loopback backend in development. This
+// keeps browser requests and session cookies on the frontend's origin.
+// Set VITE_API_BASE_URL when the production API has a separate origin.
+const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL || "").replace(/\/+$/, "");
 
 const BACKEND_UNREACHABLE_MESSAGE =
-  `Cannot reach the NetSentry backend at ${API_BASE_URL}. ` +
-  'Make sure it is running (python -m uvicorn backend.app.main:app --port 8000).';
+  "Cannot reach the NetSentry API" +
+  (API_BASE_URL ? " at " + API_BASE_URL : "") +
+  ". Make sure it is running (python -m uvicorn backend.app.main:app --port 8000).";
 
 export { API_BASE_URL };
 
@@ -43,11 +42,65 @@ async function parseResponse(response) {
  * backend, which the browser reports as "Failed to fetch") into a clear,
  * actionable message instead of a raw browser error.
  */
+export async function getCurrentUser() {
+  return request(API_BASE_URL + "/api/v1/auth/me");
+}
+
+export async function authenticate(action, values) {
+  return request(API_BASE_URL + "/api/v1/auth/" + action, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values),
+  });
+}
+
+export async function signOut() {
+  return request(API_BASE_URL + "/api/v1/auth/logout", { method: "POST" });
+}
+
+export async function getWebsites() {
+  return request(API_BASE_URL + "/api/v1/websites");
+}
+
+export async function addWebsite(values) {
+  return request(API_BASE_URL + "/api/v1/websites", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values),
+  });
+}
+
+export async function setWebsiteEnabled(id, enabled) {
+  return request(API_BASE_URL + "/api/v1/websites/" + id + "?enabled=" + enabled, { method: "PATCH" });
+}
+
+export async function deleteWebsite(id) {
+  return request(API_BASE_URL + "/api/v1/websites/" + id, { method: "DELETE" });
+}
+
+export async function getWebsiteEvents(id) {
+  return request(API_BASE_URL + "/api/v1/websites/" + id + "/events?limit=100");
+}
+
+export function websiteLiveUrl(id) {
+  const url = new URL(
+    API_BASE_URL + "/api/v1/websites/" + id + "/live",
+    window.location.origin
+  );
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 async function request(url, options) {
   let response;
+  const csrf = document.cookie.match(/(?:^|; )netsentry_csrf=([^;]*)/)?.[1];
+  const headers = new Headers(options?.headers || {});
+  if (csrf && options?.method && options.method !== "GET") {
+    headers.set("X-CSRF-Token", decodeURIComponent(csrf));
+  }
 
   try {
-    response = await fetch(url, options);
+    response = await fetch(url, { ...options, headers, credentials: "include" });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("The request timed out before the backend replied.", {
@@ -99,7 +152,7 @@ export async function getAnalysisHistory({
  * Uses the existing history endpoint.
  */
 export async function checkBackendConnection() {
-  await request(`${API_BASE_URL}/api/v1/monitoring/history?skip=0&limit=1`);
+  await request(API_BASE_URL + "/api/v1/health");
 
   return true;
 }

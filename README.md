@@ -35,6 +35,42 @@ python -m uvicorn backend.app.main:app --reload
 
 Then open the interactive docs at <http://127.0.0.1:8000/docs>.
 
+## Accounts and private analysis history
+
+The frontend supports account registration and sign-in. Accounts and server-side
+sessions are stored in the configured SQLAlchemy database; passwords are stored
+as salted scrypt hashes. New analysis reports are associated with the signed-in
+user, and history/detail/latest-report endpoints only return that user's
+reports. Existing reports from before this change remain unassigned and are
+hidden from account dashboards.
+
+The Website Monitoring page lets each account register its authorized site,
+create a private ingestion credential, and receive request events over an
+authenticated WebSocket. Install a server-side collector on the monitored
+site and POST JSON events to /api/v1/website-ingest/{site_id}/events with
+Authorization: Bearer <site-ingest-key>. The site key is only shown when
+created. The collector should send status code, path, method, duration, and
+optional request metadata. Detection currently uses explainable demo
+heuristics for 4xx/5xx responses and request bursts; these are not verified
+attack classifications. NetSentry does not fetch a URL to obtain visitor
+traffic.
+
+For an Nginx JSON-lines access log, configure a format with fields such as
+path, method, status_code, duration_ms, response_bytes, source_ip, and
+user_agent. Then run scripts/netsentry_json_log_agent.py on that authorized
+server with NETSENTRY_ACCESS_LOG, NETSENTRY_INGEST_URL, and
+NETSENTRY_INGEST_KEY set in its environment. The agent tails new log lines and
+forwards selected metadata; keep the ingestion key in a server-side secret
+store and use HTTPS between the agent and NetSentry.
+
+For local development, the default SQLite database and frontend origins are
+configured automatically. For deployment, set NETSENTRY_DATABASE_URL,
+NETSENTRY_CORS_ORIGINS to the exact frontend origins, and
+NETSENTRY_COOKIE_SECURE=true behind HTTPS. The current account flow does not
+yet include email verification, password reset, account deletion, or
+per-user isolation for the existing process-wide packet-capture worker and
+its saved alerts/flows; those legacy capture records are not tenant-isolated.
+
 ## ML pipeline (run from the repository root)
 
 ```powershell
