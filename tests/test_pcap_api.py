@@ -2,8 +2,10 @@
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from tests.auth_helpers import authenticate_test_client
 
 client = TestClient(app)
+authenticate_test_client(client)
 
 
 def test_pcap_analysis_rejects_missing_file():
@@ -48,7 +50,7 @@ def test_pcap_analysis_enriches_flows_and_reports_suspicious_count(
         "predict_anomalies",
         lambda _: predictions,
     )
-    monkeypatch.setattr(routes, "persist_analysis", lambda _response, _db: 1)
+    monkeypatch.setattr(routes, "persist_analysis", lambda _response, _db, _owner_id: 1)
     monkeypatch.setattr(routes, "save_analysis", lambda _response: None)
 
     response = client.post(
@@ -109,6 +111,42 @@ def test_pcap_analysis_rejects_prediction_count_mismatch(monkeypatch):
     )
 
 
+def test_pcap_analysis_hides_internal_prediction_errors(monkeypatch):
+    from backend.app.api import routes
+    from backend.app.services import pcap_service
+
+    monkeypatch.setattr(
+        pcap_service,
+        "analyze_pcap",
+        lambda _: {
+            "flows": [{"packet_count": 4}],
+            "total_packets": 4,
+            "total_flows": 1,
+        },
+    )
+
+    def fail_prediction(_flows):
+        raise RuntimeError("private-model-path-or-secret")
+
+    monkeypatch.setattr(routes, "predict_anomalies", fail_prediction)
+    response = client.post(
+        "/api/v1/pcap/analyze",
+        files={
+            "file": (
+                "capture.pcap",
+                b"\xd4\xc3\xb2\xa1",
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "PCAP analysis failed. Please verify the capture and try again."
+    )
+    assert "private-model-path-or-secret" not in response.text
+
+
 def test_pcap_analysis_returns_zero_counts_for_empty_flows(monkeypatch):
     from backend.app.api import routes
     from backend.app.services import pcap_service
@@ -130,7 +168,7 @@ def test_pcap_analysis_returns_zero_counts_for_empty_flows(monkeypatch):
         "predict_anomalies",
         fail_if_predictions_run,
     )
-    monkeypatch.setattr(routes, "persist_analysis", lambda _response, _db: 1)
+    monkeypatch.setattr(routes, "persist_analysis", lambda _response, _db, _owner_id: 1)
     monkeypatch.setattr(routes, "save_analysis", lambda _response: None)
 
     response = client.post(

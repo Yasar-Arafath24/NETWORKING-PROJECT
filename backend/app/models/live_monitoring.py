@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     DateTime,
+    ForeignKey,
     Float,
     Integer,
     JSON,
@@ -32,6 +33,7 @@ class LiveFlowRecord(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     session_id: Mapped[str] = mapped_column(String(100), index=True)
     flow_id: Mapped[int] = mapped_column(Integer, index=True)
 
@@ -67,6 +69,7 @@ class NetworkAlert(Base):
     __tablename__ = "network_alerts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     session_id: Mapped[str] = mapped_column(String(100), index=True)
     flow_id: Mapped[int] = mapped_column(Integer, index=True)
 

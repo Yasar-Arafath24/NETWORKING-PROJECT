@@ -6,3 +6,5 @@ scapy==2.7.0
 SQLAlchemy==2.0.51
 uvicorn==0.51.0
 psycopg2-binary==2.9.10
+google-auth>=2.35,<3
+python-dotenv>=1,<2

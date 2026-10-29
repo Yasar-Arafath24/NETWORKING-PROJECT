@@ -4,8 +4,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from tests.auth_helpers import authenticate_test_client
 
 client = TestClient(app)
+authenticate_test_client(client)
 
 # Project root: the directory containing this test's parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

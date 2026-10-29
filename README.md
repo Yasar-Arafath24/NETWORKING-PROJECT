@@ -44,16 +44,33 @@ user, and history/detail/latest-report endpoints only return that user's
 reports. Existing reports from before this change remain unassigned and are
 hidden from account dashboards.
 
+Sign in with Google uses Google Identity Services. The backend verifies each
+Google ID token with Google's `google-auth` library, checks its audience,
+signature, issuer, expiry, signed nonce, verified email, and Gmail-only policy,
+then issues the same NetSentry session cookie used by password sign-in.
+Verified Google identities are linked by Google's stable subject ID; a password
+account is linked only after Google cryptographically verifies control of its
+matching Gmail address. No Google client secret or ID token is stored.
+
+To configure Google sign-in, create an OAuth client of type **Web application**
+in Google Cloud Console. Add `http://localhost:5173` and
+`http://127.0.0.1:5173` as authorized JavaScript origins for local development,
+plus your deployed frontend origin. The popup/ID-token flow does not use a
+redirect URI. Copy the Web client ID into `GOOGLE_CLIENT_ID` in the backend
+environment; `.env.example` shows the local configuration keys. No client
+secret is required. Run the backend with `--env-file .env` locally, and set the
+same variable in the production backend's secret/environment settings.
+
 The Website Monitoring page lets each account register its authorized site,
 create a private ingestion credential, and receive request events over an
 authenticated WebSocket. Install a server-side collector on the monitored
 site and POST JSON events to /api/v1/website-ingest/{site_id}/events with
 Authorization: Bearer <site-ingest-key>. The site key is only shown when
 created. The collector should send status code, path, method, duration, and
-optional request metadata. Detection currently uses explainable demo
-heuristics for 4xx/5xx responses and request bursts; these are not verified
-attack classifications. NetSentry does not fetch a URL to obtain visitor
-traffic.
+optional request metadata including the original request timestamp. Current
+heuristics flag unusually high request volume as a provisional signal. 4xx/5xx
+HTTP responses are displayed as status codes and are not treated as attacks.
+NetSentry does not fetch a URL to obtain visitor traffic.
 
 For an Nginx JSON-lines access log, configure a format with fields such as
 path, method, status_code, duration_ms, response_bytes, source_ip, and
@@ -69,9 +86,32 @@ NETSENTRY_CORS_ORIGINS to the exact frontend origins, and
 NETSENTRY_COOKIE_SECURE=true behind HTTPS. For separate frontend/API origins, set
 NETSENTRY_COOKIE_SAMESITE=none (HTTPS and NETSENTRY_COOKIE_SECURE=true are required
 for browser SameSite=None cookies). The current account flow does not
-yet include email verification, password reset, account deletion, or
-per-user isolation for the existing process-wide packet-capture worker and
-its saved alerts/flows; those legacy capture records are not tenant-isolated.
+yet include email verification, password reset, or account deletion. Authorized
+website records and telemetry are isolated by account. The existing
+process-wide capture worker permits only its owner to view that live session;
+persisted live flow records and alerts are owner-scoped. Legacy records without
+an owner are hidden.
+
+For Traffic Monitoring PCAP replay, use a path relative to the `datasets/`
+folder, such as `samples/netsentry_sample.pcap`; paths prefixed with
+`datasets/` are also accepted. On Windows, live interface capture requires
+Npcap and appropriate capture permissions. PCAP replay does not require Npcap.
+
+Existing Supabase databases should apply migrations `002_website_request_timestamp.sql`,
+`003_google_auth.sql`, and `004_live_monitor_ownership.sql` if they have not been
+applied already. Local SQLite startup applies the additive columns automatically.
+
+Run the frontend and backend from the repository root in separate PowerShell
+terminals:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn backend.app.main:app --reload --port 8000 --env-file .env
+```
+
+```powershell
+npm run dev
+```
 
 ## ML pipeline (run from the repository root)
 

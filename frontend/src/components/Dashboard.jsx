@@ -12,6 +12,7 @@ import {
   FileText,
   Gauge,
   LayoutDashboard,
+  LogOut,
   Menu,
   Network,
   Search,
@@ -43,6 +44,7 @@ import WebsiteMonitoring from "./WebsiteMonitoring";
 import {
   uploadPcap,
   getAnalysisHistory,
+  getLatestAnalysis,
   checkBackendConnection,
   API_BASE_URL,
 } from "../services/api";
@@ -205,8 +207,12 @@ function getFlows(result) {
   if (Array.isArray(result?.flows)) return result.flows;
   if (Array.isArray(result?.results)) return result.results;
   if (Array.isArray(result?.data?.flows)) return result.data.flows;
-  if (Array.isArray(result?.analysis?.flows)) return result.analysis.flows;
   if (Array.isArray(result?.data?.results)) return result.data.results;
+  if (Array.isArray(result?.analysis?.flows)) return result.analysis.flows;
+  if (Array.isArray(result?.analysis?.results)) return result.analysis.results;
+  if (Array.isArray(result?.report_data?.flows)) return result.report_data.flows;
+  if (Array.isArray(result?.data?.report_data?.flows)) return result.data.report_data.flows;
+  if (Array.isArray(result?.analysis?.report_data?.flows)) return result.analysis.report_data.flows;
 
   return [];
 }
@@ -339,6 +345,7 @@ function getFlowTotal(result) {
   return (
     result?.total_flows ??
     result?.flow_count ??
+    result?.traffic_summary?.total_flows_analyzed ??
     result?.summary?.total_flows ??
     result?.data?.total_flows ??
     null
@@ -353,9 +360,11 @@ function SeverityBadge({ severity = "medium", children }) {
   );
 }
 
-export default function Dashboard({ user = null }) {
+export default function Dashboard({ user = null, onSignOut }) {
   const [uploadingPcap, setUploadingPcap] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(true);
+  const [analysisError, setAnalysisError] = useState("");
 
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -392,10 +401,33 @@ export default function Dashboard({ user = null }) {
     }
   }, []);
 
+  const loadLatestAnalysis = useCallback(async () => {
+    setAnalysisLoading(true);
+    try {
+      const result = await getLatestAnalysis();
+      setAnalysis(result?.report_data ?? result?.analysis ?? result);
+      setAnalysisError("");
+    } catch (error) {
+      if (error?.status === 404) {
+        setAnalysis(null);
+        setAnalysisError("");
+      } else {
+        setAnalysisError(error instanceof Error ? error.message : "Unable to load the latest PCAP analysis.");
+      }
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(loadHistory, 0);
     return () => window.clearTimeout(timer);
   }, [loadHistory]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(loadLatestAnalysis, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadLatestAnalysis]);
 
   useEffect(() => {
     let active = true;
@@ -447,6 +479,8 @@ export default function Dashboard({ user = null }) {
       const result = await uploadPcap(file);
 
       setAnalysis(result);
+      setAnalysisError("");
+      setAnalysisLoading(false);
       setActivePage("PCAP Analysis");
 
       await loadHistory();
@@ -547,6 +581,9 @@ export default function Dashboard({ user = null }) {
     analysis?.anomaly_count ??
     analysis?.summary?.suspicious_flows ??
     suspiciousFlows.length;
+  const normalCount = analysis?.traffic_summary?.normal_flows ?? normalFlows.length;
+  const unclassifiedCount = analysis?.traffic_summary?.unavailable_predictions ?? unclassifiedFlows.length;
+  const analyzedFlowCount = getFlowTotal(analysis) ?? flows.length;
 
   const primaryAction = (
     <button
@@ -947,149 +984,15 @@ export default function Dashboard({ user = null }) {
   }
 
   function renderTrafficMonitoring() {
-    const totalBytes = flows.reduce((sum, flow) => {
-      const bytes = Number(
-        flow?.total_bytes ??
-          flow?.bytes ??
-          flow?.byte_count ??
-          0
-      );
-
-      return sum + (Number.isFinite(bytes) && bytes > 0 ? bytes : 0);
-    }, 0);
-
     return (
       <>
         <PageHeading
           eyebrow="NETWORK VISIBILITY"
           title="Traffic Monitoring"
-          description="Watch authorized website requests arrive live and review flow data from your latest PCAP analysis."
+          description="Capture authorized network-interface traffic or replay a local PCAP, then inspect live network flows."
           action={primaryAction}
         />
-
-        <WebsiteMonitoring embedded />
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Network traffic monitoring</h2>
-              <p>
-                Review the flow records available from your latest PCAP
-                analysis.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={loadHistory}
-              disabled={historyLoading}
-            >
-              <Activity size={16} />
-              {historyLoading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-
-          <section className="metrics-grid">
-            <MetricCard
-              title="Total flows"
-              value={formatNumber(flows.length)}
-              description="Flows in the latest analysis"
-              icon={Activity}
-            />
-
-            <MetricCard
-              title="Suspicious flows"
-              value={formatNumber(suspiciousFlows.length)}
-              description="Flows flagged for review"
-              icon={ShieldAlert}
-            />
-
-            <MetricCard
-              title="Traffic volume"
-              value={formatBytes(totalBytes)}
-              description="Sum of reported flow bytes"
-              icon={Network}
-            />
-
-            <MetricCard
-              title="Analysis status"
-              value={analysis ? "Available" : "Waiting"}
-              description={
-                analysis
-                  ? "Latest PCAP response received"
-                  : "Upload a PCAP to populate traffic data"
-              }
-              icon={Gauge}
-            />
-          </section>
-
-          {trafficData.length > 0 && (
-            <div className="traffic-chart-section">
-              <div className="panel-heading">
-                <div>
-                  <h3>Packet activity</h3>
-                  <p>Time-series data from the latest analysis</p>
-                </div>
-              </div>
-
-              <div className="chart-container">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trafficData}>
-                    <CartesianGrid
-                      stroke="#e2e8f0"
-                      strokeDasharray="3 3"
-                      vertical={false}
-                    />
-                    <XAxis dataKey="time" />
-                    <YAxis />
-                    <Tooltip />
-                    <Area
-                      type="monotone"
-                      dataKey="packets"
-                      name="Packets"
-                      stroke="#2563eb"
-                      strokeWidth={2}
-                      fill="#dbeafe"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-
-          <div className="panel-heading flow-records-heading">
-            <div>
-              <h2>Network flow records</h2>
-              <p>
-                {flows.length
-                  ? `${formatNumber(flows.length)} flow records found`
-                  : "Flow records appear after a successful PCAP analysis"}
-              </p>
-            </div>
-          </div>
-
-          {!analysis ? (
-            <EmptyState
-              title="No traffic records available"
-              description="Open PCAP Analysis, upload a .pcap or .pcapng file, and run the analysis."
-              action={primaryAction}
-            />
-          ) : flows.length === 0 ? (
-            <EmptyState
-              title="No flow records returned"
-              description="Inspect the raw API response on the PCAP Analysis page to confirm the response field names."
-            />
-          ) : (
-            <FlowResults flows={flows} />
-          )}
-
-          {uploadingPcap && (
-            <p className="system-note">
-              PCAP analysis is currently running…
-            </p>
-          )}
-        </section>
+        <RealtimeTrafficMonitor />
       </>
     );
   }
@@ -1100,10 +1003,10 @@ export default function Dashboard({ user = null }) {
         <PageHeading
           eyebrow="NETWORK VISIBILITY"
           title="Real-Time Traffic Monitoring"
-          description="Live web traffic monitoring with packet capture and flow analysis."
+          description="Monitor authorized website request telemetry from its server-side log collector."
           action={primaryAction}
         />
-        <RealtimeTrafficMonitor />
+        <WebsiteMonitoring embedded />
       </>
     );
   }
@@ -1121,28 +1024,28 @@ export default function Dashboard({ user = null }) {
         <section className="metrics-grid">
           <MetricCard
             title="Suspicious flows"
-            value={formatNumber(suspiciousFlows.length)}
+            value={analysis ? formatNumber(suspiciousCount) : "—"}
             description="Flows flagged by recognized anomaly indicators"
             icon={ShieldAlert}
           />
 
           <MetricCard
             title="Normal flows"
-            value={formatNumber(normalFlows.length)}
+            value={analysis ? formatNumber(normalCount) : "—"}
             description="Flows classified as normal or benign"
             icon={ShieldCheck}
           />
 
           <MetricCard
             title="Unclassified flows"
-            value={formatNumber(unclassifiedFlows.length)}
+            value={analysis ? formatNumber(unclassifiedCount) : "—"}
             description="Flows without a recognized classification"
             icon={Activity}
           />
 
           <MetricCard
             title="Total analyzed flows"
-            value={formatNumber(flows.length)}
+            value={analysis ? formatNumber(analyzedFlowCount) : "—"}
             description="Flow records in the latest response"
             icon={Network}
           />
@@ -1158,7 +1061,18 @@ export default function Dashboard({ user = null }) {
             <ShieldAlert size={20} />
           </div>
 
-          {!analysis ? (
+          {analysisLoading ? (
+            <EmptyState
+              title="Loading your latest analysis"
+              description="Retrieving your most recent PCAP analysis from your account history."
+            />
+          ) : analysisError ? (
+            <div className="website-error" role="alert">
+              <strong>Unable to load AI detection results</strong>
+              <p>{analysisError}</p>
+              <button type="button" className="secondary-button" onClick={loadLatestAnalysis}>Retry</button>
+            </div>
+          ) : !analysis ? (
             <EmptyState
               title="No analysis available"
               description="Upload a PCAP file and run an analysis to view AI detection results."
@@ -1799,6 +1713,19 @@ export default function Dashboard({ user = null }) {
                   >
                     <CircleHelp size={16} />
                     Help & documentation
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await onSignOut?.();
+                      } catch (error) {
+                        setHistoryError(error.message || "Unable to sign out.");
+                      }
+                    }}
+                  >
+                    <LogOut size={16} />
+                    Sign out
                   </button>
                 </div>
               )}

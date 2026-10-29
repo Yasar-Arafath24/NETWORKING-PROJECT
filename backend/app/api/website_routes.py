@@ -1,15 +1,18 @@
 from collections import defaultdict
+from collections import deque
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import os
 import re
 import secrets
+import threading
+import time
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.app.api.auth_routes import get_current_user
@@ -20,6 +23,8 @@ from backend.app.services.database import SessionLocal, get_db
 router = APIRouter(prefix="/api/v1/websites", tags=["Website monitoring"])
 ingest_router = APIRouter(prefix="/api/v1/website-ingest", tags=["Website traffic ingestion"])
 _clients: dict[int, set[WebSocket]] = defaultdict(set)
+_ingest_times: dict[int, deque[float]] = defaultdict(deque)
+_ingest_lock = threading.Lock()
 
 
 class WebsiteCreate(BaseModel):
@@ -36,6 +41,7 @@ class WebsiteEventInput(BaseModel):
     response_bytes: int = Field(default=0, ge=0, le=2_147_483_647)
     source_ip: str = Field(default="", max_length=64)
     user_agent: str = Field(default="", max_length=256)
+    request_timestamp: datetime | None = None
 
 
 def _site_json(site: MonitoredWebsite, *, token: str | None = None) -> dict:
@@ -100,42 +106,123 @@ def delete_website(site_id: int, user: User = Depends(get_current_user), db: Ses
 @router.get("/{site_id}/events")
 def list_website_events(
     site_id: int,
-    limit: int = Query(default=100, ge=1, le=500),
+    skip: int = Query(default=0, ge=0, le=1_000_000),
+    limit: int = Query(default=50, ge=1, le=100),
+    search: str = Query(default="", max_length=100),
+    method: str | None = Query(default=None, min_length=1, max_length=12),
+    status_code: int | None = Query(default=None, ge=100, le=599),
+    classification: str = Query(default="all", pattern="^(all|heuristic|unassessed)$"),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _owned_site(db, site_id, user.id)
-    events = db.query(WebsiteTrafficEvent).filter_by(site_id=site_id).order_by(WebsiteTrafficEvent.id.desc()).limit(limit).all()
+    if since and until and since > until:
+        raise HTTPException(422, "The start time must be earlier than the end time.")
+    base_query = db.query(WebsiteTrafficEvent).filter(WebsiteTrafficEvent.site_id == site_id)
+    if since:
+        base_query = base_query.filter(WebsiteTrafficEvent.created_at >= since)
+    if until:
+        base_query = base_query.filter(WebsiteTrafficEvent.created_at <= until)
+    filtered_query = base_query
+    if method:
+        filtered_query = filtered_query.filter(WebsiteTrafficEvent.method == method.upper())
+    if status_code is not None:
+        filtered_query = filtered_query.filter(WebsiteTrafficEvent.status_code == status_code)
+    if classification == "heuristic":
+        filtered_query = filtered_query.filter(WebsiteTrafficEvent.severity == "HEURISTIC")
+    elif classification == "unassessed":
+        filtered_query = filtered_query.filter(WebsiteTrafficEvent.severity != "HEURISTIC")
+    if search.strip():
+        pattern = "%" + search.strip().replace("%", r"\%").replace("_", r"\_") + "%"
+        filtered_query = filtered_query.filter(or_(
+            WebsiteTrafficEvent.request_path.ilike(pattern, escape="\\"),
+            WebsiteTrafficEvent.source_ip.ilike(pattern, escape="\\"),
+            WebsiteTrafficEvent.user_agent.ilike(pattern, escape="\\"),
+        ))
+    total = filtered_query.count()
+    events = (
+        filtered_query.order_by(WebsiteTrafficEvent.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    selected_total = base_query.count()
+    status_rows = (
+        base_query.with_entities(
+            WebsiteTrafficEvent.status_code,
+            func.count(WebsiteTrafficEvent.id),
+        )
+        .group_by(WebsiteTrafficEvent.status_code)
+        .all()
+    )
+    status_distribution = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+    for status, count in status_rows:
+        status_distribution[str(status // 100) + "xx"] += count
+    traffic_bytes = base_query.with_entities(
+        func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0)
+    ).scalar() or 0
+    heuristic_count = base_query.filter(WebsiteTrafficEvent.severity == "HEURISTIC").count()
     recent_since = datetime.now(timezone.utc) - timedelta(minutes=1)
     recent_count = db.query(func.count(WebsiteTrafficEvent.id)).filter(
         WebsiteTrafficEvent.site_id == site_id,
         WebsiteTrafficEvent.created_at >= recent_since,
     ).scalar() or 0
-    return {"events": [_event_json(event) for event in reversed(events)], "requests_per_minute": recent_count}
+    return {
+        "events": [_event_json(event) for event in events],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "summary": {
+            "total_requests": selected_total,
+            "requests_per_minute": recent_count,
+            "response_bytes": int(traffic_bytes),
+            "heuristic_flags": heuristic_count,
+            "status_distribution": status_distribution,
+        },
+    }
 
 
 def _event_json(event: WebsiteTrafficEvent) -> dict:
+    received_at = event.created_at.isoformat()
     return {
         "id": event.id, "path": event.request_path, "method": event.method, "status_code": event.status_code,
         "duration_ms": event.duration_ms, "response_bytes": event.response_bytes, "source_ip": event.source_ip,
         "user_agent": event.user_agent, "severity": event.severity, "reason": event.reason,
-        "created_at": event.created_at.isoformat(),
+        "request_timestamp": event.request_timestamp.isoformat() if event.request_timestamp else received_at,
+        "received_at": received_at,
+        "created_at": received_at,
+        "detection_status": "heuristic_flag" if event.severity == "HEURISTIC" else "unassessed",
     }
 
 
 def _risk(db: Session, site_id: int, item: WebsiteEventInput) -> tuple[str, str]:
-    if item.status_code >= 500:
-        return "HIGH", "Server returned an error response (5xx)."
-    if item.status_code >= 400:
-        return "MEDIUM", "Client or authorization failure response (4xx)."
     since = datetime.now(timezone.utc) - timedelta(minutes=1)
     recent = db.query(func.count(WebsiteTrafficEvent.id)).filter(
         WebsiteTrafficEvent.site_id == site_id,
         WebsiteTrafficEvent.created_at >= since,
     ).scalar() or 0
     if recent >= 120:
-        return "HIGH", "Request volume exceeded the demo threshold of 120 requests per minute."
+        return "HEURISTIC", "Request volume exceeded the provisional threshold of 120 requests per minute; this is a rate heuristic, not an attack verdict."
     return "INFO", ""
+
+
+def _allow_ingest(site_id: int) -> bool:
+    try:
+        limit = max(1, min(int(os.getenv("NETSENTRY_SITE_INGEST_PER_MINUTE", "1200")), 100_000))
+    except ValueError:
+        limit = 1200
+    now = time.monotonic()
+    cutoff = now - 60
+    with _ingest_lock:
+        recent = _ingest_times[site_id]
+        while recent and recent[0] <= cutoff:
+            recent.popleft()
+        if len(recent) >= limit:
+            return False
+        recent.append(now)
+    return True
 
 
 @ingest_router.post("/{site_id}/events", status_code=202)
@@ -151,18 +238,21 @@ async def ingest_website_event(
         hashlib.sha256(supplied.encode()).hexdigest(), site.token_hash
     ):
         raise HTTPException(401, "Invalid website ingestion credential.")
+    if not _allow_ingest(site.id):
+        raise HTTPException(429, "Website telemetry ingestion rate limit exceeded.")
     path = item.path.split("?", 1)[0].split("#", 1)[0]
     path = path if path.startswith("/") and not path.startswith("//") else "/"
     method = item.method.upper()
     if not re.fullmatch(r"[A-Z]{1,12}", method):
         raise HTTPException(422, "Invalid HTTP method.")
     severity, reason = _risk(db, site.id, item)
-    event_data = item.model_dump()
+    event_data = item.model_dump(mode="json")
     event_data["path"] = path
     event = WebsiteTrafficEvent(
         site_id=site.id, request_path=path, method=method, status_code=item.status_code,
         duration_ms=item.duration_ms, response_bytes=item.response_bytes, source_ip=item.source_ip,
         user_agent=item.user_agent[:256], severity=severity, reason=reason, event_data=event_data,
+        request_timestamp=item.request_timestamp,
     )
     db.add(event)
     db.commit()

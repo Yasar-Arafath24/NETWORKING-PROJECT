@@ -27,11 +27,13 @@ async function parseResponse(response) {
         ? data.detail || data.message
         : data;
 
-    throw new Error(
+    const error = new Error(
       detail
         ? String(detail)
         : `Request failed with status ${response.status}`
     );
+    error.status = response.status;
+    throw error;
   }
 
   return data;
@@ -51,6 +53,18 @@ export async function authenticate(action, values) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(values),
+  });
+}
+
+export async function getGoogleSignInConfig() {
+  return request(API_BASE_URL + "/api/v1/auth/google/config");
+}
+
+export async function authenticateWithGoogle(credential, nonce) {
+  return request(API_BASE_URL + "/api/v1/auth/google", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credential, nonce }),
   });
 }
 
@@ -78,8 +92,16 @@ export async function deleteWebsite(id) {
   return request(API_BASE_URL + "/api/v1/websites/" + id, { method: "DELETE" });
 }
 
-export async function getWebsiteEvents(id) {
-  return request(API_BASE_URL + "/api/v1/websites/" + id + "/events?limit=100");
+export async function getWebsiteEvents(id, options = {}) {
+  const params = new URLSearchParams({
+    skip: String(options.skip ?? 0),
+    limit: String(options.limit ?? 50),
+  });
+  for (const key of ["search", "method", "status_code", "classification", "since", "until"]) {
+    const value = options[key];
+    if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+  }
+  return request(API_BASE_URL + "/api/v1/websites/" + id + "/events?" + params);
 }
 
 export function websiteLiveUrl(id) {

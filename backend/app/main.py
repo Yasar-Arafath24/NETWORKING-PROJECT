@@ -14,6 +14,18 @@ from backend.app.models.user import User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
 
 Base.metadata.create_all(bind=engine)
+for table_name in ("live_flow_records", "network_alerts"):
+    columns = {column["name"] for column in inspect(engine).get_columns(table_name)}
+    if "owner_id" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE"))
+    with engine.begin() as connection:
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_owner_id ON {table_name} (owner_id)"))
+user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+if "google_subject" not in user_columns:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE users ADD COLUMN google_subject VARCHAR(255) NULL"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_subject ON users (google_subject)"))
 if "owner_id" not in {column["name"] for column in inspect(engine).get_columns("analysis_reports")}:
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE analysis_reports ADD COLUMN owner_id INTEGER REFERENCES users(id)"))
@@ -26,6 +38,11 @@ if "authorization_confirmed" not in website_columns:
             "ALTER TABLE monitored_websites ADD COLUMN "
             f"authorization_confirmed BOOLEAN NOT NULL DEFAULT {default}"
         ))
+event_columns = {column["name"] for column in inspect(engine).get_columns("website_traffic_events")}
+if "request_timestamp" not in event_columns:
+    timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE website_traffic_events ADD COLUMN request_timestamp {timestamp_type} NULL"))
 
 app = FastAPI(
     title="NetSentry AI",

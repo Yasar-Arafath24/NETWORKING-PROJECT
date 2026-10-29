@@ -110,7 +110,7 @@ class LiveDetectionService:
 
         return "LOW"
 
-    def _assess_flow(self, flow, session_id):
+    def _assess_flow(self, flow, session_id, owner_id):
         """Predict, persist the flow snapshot, and upsert its alert."""
         from ml.anomaly_detector import predict_anomalies
 
@@ -159,6 +159,7 @@ class LiveDetectionService:
             record = (
                 db.query(LiveFlowRecord)
                 .filter_by(
+                    owner_id=owner_id,
                     session_id=session_id,
                     flow_id=flow_id,
                 )
@@ -167,6 +168,7 @@ class LiveDetectionService:
 
             if record is None:
                 record = LiveFlowRecord(
+                    owner_id=owner_id,
                     session_id=session_id,
                     flow_id=flow_id,
                     src_ip=str(flow.get("src_ip", "")),
@@ -191,6 +193,7 @@ class LiveDetectionService:
             alert = (
                 db.query(NetworkAlert)
                 .filter_by(
+                    owner_id=owner_id,
                     session_id=session_id,
                     flow_id=flow_id,
                 )
@@ -208,6 +211,7 @@ class LiveDetectionService:
 
                 if alert is None:
                     alert = NetworkAlert(
+                        owner_id=owner_id,
                         session_id=session_id,
                         flow_id=flow_id,
                         severity=severity,
@@ -258,6 +262,10 @@ class LiveDetectionService:
             while not self._stop_event.is_set():
                 monitor_status = monitor.status()
                 session_id = self._session_id(monitor_status)
+                owner_id = monitor.owner_id
+                if owner_id is None:
+                    self._stop_event.wait(0.5)
+                    continue
 
                 try:
                     flows = monitor.get_flows(limit=1000)
@@ -286,21 +294,21 @@ class LiveDetectionService:
                         continue
 
                     try:
-                        self._assess_flow(flow, session_id)
+                        self._assess_flow(flow, session_id, owner_id)
 
                         # Mark processed only after successful persistence.
                         self._processed[key] = signature
 
-                    except Exception as exc:
-                        message = (
-                            f"Flow {flow_id} assessment failed: "
-                            f"{type(exc).__name__}: {exc}"
+                    except Exception:
+                        logger.exception(
+                            "Flow assessment failed for flow %s",
+                            flow_id,
                         )
 
-                        logger.exception("%s", message)
-
                         with self._lock:
-                            self._last_error = message
+                            self._last_error = (
+                                "Flow detection failed for one or more flows."
+                            )
 
                 # When capture or replay ends, process the final snapshots
                 # once, then exit. The loop above skips unchanged snapshots.
@@ -309,16 +317,11 @@ class LiveDetectionService:
 
                 self._stop_event.wait(1.0)
 
-        except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
-
-            logger.exception(
-                "Live detection worker failed: %s",
-                message,
-            )
+        except Exception:
+            logger.exception("Live detection worker failed")
 
             with self._lock:
-                self._last_error = message
+                self._last_error = "Live detection worker failed."
 
 
 live_detection = LiveDetectionService()

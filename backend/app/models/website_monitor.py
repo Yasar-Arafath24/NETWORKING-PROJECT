@@ -38,4 +38,5 @@ class WebsiteTrafficEvent(Base):
     severity: Mapped[str] = mapped_column(String(16), default="INFO", nullable=False)
     reason: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     event_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    request_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

@@ -1,6 +1,7 @@
 
 from ml.anomaly_service import predict_anomalies
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import json
@@ -32,6 +33,7 @@ from backend.app.core.upload_validation import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["NetSentry"])
+logger = logging.getLogger(__name__)
 
 
 # ==================================================
@@ -95,6 +97,7 @@ def persist_analysis(response: dict, db: Session, owner_id: int) -> int:
 
     except Exception as exc:
         db.rollback()
+        logger.exception("Failed to persist PCAP analysis report")
         raise HTTPException(
             status_code=500,
             detail="Failed to save analysis report to the database.",
@@ -158,9 +161,10 @@ def predict_traffic(features: TrafficFeatures):
         ) from exc
 
     except Exception as exc:
+        logger.exception("Traffic prediction failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Traffic prediction failed: {exc}",
+            detail="Traffic prediction failed. Please try again later.",
         ) from exc
 
 
@@ -410,9 +414,10 @@ async def analyze_pcap_upload(
         ) from exc
 
     except Exception as exc:
+        logger.exception("PCAP analysis failed")
         raise HTTPException(
             status_code=500,
-            detail=f"PCAP analysis failed: {exc}",
+            detail="PCAP analysis failed. Please verify the capture and try again.",
         ) from exc
 
     finally:
@@ -688,10 +693,15 @@ def get_monitoring_statistics(
 def start_live_monitoring(request: LiveCaptureRequest, user: User = Depends(get_current_user)):
     """Start live packet capture."""
 
-    from backend.app.services.live_monitor import monitor
+    from backend.app.services.live_monitor import (
+        CaptureProviderUnavailable,
+        CaptureStartupError,
+        InvalidCaptureInterface,
+        monitor,
+    )
 
     try:
-        monitor.start_live(interface=request.interface)
+        monitor.start_live(interface=request.interface, owner_id=user.id)
         from backend.app.services.live_detection import live_detection
 
         live_detection.start()
@@ -702,6 +712,18 @@ def start_live_monitoring(request: LiveCaptureRequest, user: User = Depends(get_
             "monitor": monitor.status(),
         }
 
+    except CaptureProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    except InvalidCaptureInterface as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    except CaptureStartupError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     except RuntimeError as exc:
         raise HTTPException(
             status_code=409,
@@ -709,9 +731,10 @@ def start_live_monitoring(request: LiveCaptureRequest, user: User = Depends(get_
         ) from exc
 
     except Exception as exc:
+        logger.exception("Could not start live monitoring")
         raise HTTPException(
             status_code=500,
-            detail=f"Could not start live monitoring: {exc}",
+            detail="Could not start live monitoring. Check the capture interface and server configuration.",
         ) from exc
 
 
@@ -727,9 +750,18 @@ def replay_pcap_monitoring(request: LiveReplayRequest, user: User = Depends(get_
             Path(__file__).resolve().parents[3] / "datasets"
         ).resolve()
 
-        requested_path = Path(request.pcap_path)
+        requested_path = Path(request.pcap_path.strip().replace("\\", "/"))
 
         if not requested_path.is_absolute():
+            # The UI accepts either a path relative to datasets/ or the same
+            # path prefixed with datasets/. Strip that optional prefix before
+            # joining so datasets/foo.pcap never becomes datasets/datasets/foo.pcap.
+            relative_parts = list(requested_path.parts)
+            while relative_parts and relative_parts[0] in {".", ""}:
+                relative_parts.pop(0)
+            if relative_parts and relative_parts[0].lower() == "datasets":
+                relative_parts.pop(0)
+            requested_path = Path(*relative_parts)
             requested_path = datasets_root / requested_path
 
         resolved_path = requested_path.resolve()
@@ -757,6 +789,7 @@ def replay_pcap_monitoring(request: LiveReplayRequest, user: User = Depends(get_
         monitor.start_replay(
             pcap_path=str(resolved_path),
             speed=request.speed,
+            owner_id=user.id,
         )
         from backend.app.services.live_detection import live_detection
 
@@ -774,7 +807,7 @@ def replay_pcap_monitoring(request: LiveReplayRequest, user: User = Depends(get_
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=404,
-            detail=str(exc),
+            detail="PCAP replay file could not be opened.",
         ) from exc
 
     except ValueError as exc:
@@ -790,9 +823,10 @@ def replay_pcap_monitoring(request: LiveReplayRequest, user: User = Depends(get_
         ) from exc
 
     except Exception as exc:
+        logger.exception("Could not start PCAP replay")
         raise HTTPException(
             status_code=500,
-            detail=f"Could not start PCAP replay: {exc}",
+            detail="Could not start PCAP replay. Check the file and server configuration.",
         ) from exc
 
 
@@ -801,6 +835,9 @@ def stop_live_monitoring(user: User = Depends(get_current_user)):
     """Request the active capture or replay to stop."""
 
     from backend.app.services.live_monitor import monitor
+
+    if monitor.owner_id is not None and monitor.owner_id != user.id:
+        raise HTTPException(404, "No live monitoring session is available to this account.")
 
     monitor.stop()
 
@@ -822,12 +859,19 @@ def get_live_monitoring_status(user: User = Depends(get_current_user)):
 
     from backend.app.services.live_monitor import monitor
 
-    return monitor.status()
+    status = monitor.status()
+    if monitor.owner_id is not None and monitor.owner_id != user.id:
+        return {"running": False, "mode": None, "source": None, "started_at": None,
+                "last_packet_at": None, "total_packets": 0, "total_bytes": 0,
+                "total_flows": 0, "error": None}
+    return status
 
 
 @router.get("/monitoring/live/interfaces")
 def get_live_capture_interfaces(user: User = Depends(get_current_user)):
     """Return network interfaces that can be used for packet capture."""
+    from backend.app.services.live_monitor import capture_capabilities
+
     try:
         from scapy.all import get_if_list
 
@@ -835,7 +879,13 @@ def get_live_capture_interfaces(user: User = Depends(get_current_user)):
     except Exception:
         interfaces = []
 
-    return {"status": "success", "interfaces": interfaces}
+    capabilities = capture_capabilities()
+    return {
+        "status": "success",
+        "interfaces": interfaces,
+        "capture_available": capabilities["available"],
+        "capture_error": capabilities["error"],
+    }
 
 
 @router.get("/monitoring/live/flows")
@@ -851,13 +901,17 @@ def get_live_monitoring_flows(
 
     flows = monitor.get_flows(limit=limit)
     monitor_status = monitor.status()
+    if monitor.owner_id != user.id:
+        return {"status": "success", "monitor": {"running": False, "mode": None, "source": None,
+                "started_at": None, "last_packet_at": None, "total_packets": 0, "total_bytes": 0,
+                "total_flows": 0, "error": None}, "total_flows_returned": 0, "flows": []}
     session_id = monitor_status.get("started_at")
 
     assessments = {}
     if session_id:
         records = (
             db.query(LiveFlowRecord)
-            .filter(LiveFlowRecord.session_id == session_id)
+            .filter(LiveFlowRecord.owner_id == user.id, LiveFlowRecord.session_id == session_id)
             .all()
         )
         assessments = {record.flow_id: record for record in records}
@@ -896,7 +950,7 @@ def get_live_monitoring_packets(
 
     from backend.app.services.live_monitor import monitor
 
-    packets = monitor.get_recent_packets(limit=limit)
+    packets = monitor.get_recent_packets(limit=limit) if monitor.owner_id == user.id else []
 
     return {
         "status": "success",
@@ -921,6 +975,7 @@ def get_persisted_live_flows(
 
     records = (
         db.query(LiveFlowRecord)
+        .filter(LiveFlowRecord.owner_id == user.id)
         .order_by(LiveFlowRecord.last_updated.desc())
         .limit(limit)
         .all()
@@ -966,6 +1021,7 @@ def get_persisted_network_alerts(
 
     records = (
         db.query(NetworkAlert)
+        .filter(NetworkAlert.owner_id == user.id)
         .order_by(NetworkAlert.created_at.desc())
         .limit(limit)
         .all()
@@ -996,8 +1052,10 @@ def get_live_detection_status(user: User = Depends(get_current_user)):
     """Return the background detection worker status."""
 
     from backend.app.services.live_detection import live_detection
+    from backend.app.services.live_monitor import monitor
 
+    detection = live_detection.status() if monitor.owner_id == user.id else {"running": False, "last_error": None, "processed_flow_snapshots": 0}
     return {
         "status": "success",
-        "detection": live_detection.status(),
+        "detection": detection,
     }

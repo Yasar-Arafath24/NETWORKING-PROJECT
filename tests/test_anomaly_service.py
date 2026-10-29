@@ -40,5 +40,5 @@ def test_prediction_count_matches_flow_count():
 
     for result in results:
         assert isinstance(result["anomaly"], bool)
-        assert result["label"] in {"normal", "anomaly"}
+        assert result["label"] in {"NORMAL", "ANOMALY"}
         assert isinstance(result["anomaly_score"], float)

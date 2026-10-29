@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -16,7 +17,7 @@ from urllib.request import Request, urlopen
 running = True
 
 APACHE_RE = re.compile(
-    r'^(?P<source_ip>\S+) \S+ \S+ \[[^\]]+\] '
+    r'^(?P<source_ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] '
     r'"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^"]+" '
     r'(?P<status_code>\d{3}) (?P<response_bytes>\d+|-)(?: .*?)?$'
 )
@@ -77,7 +78,7 @@ def normalize_event(data, parser=None, default_status=200):
         except (TypeError, ValueError):
             return default
 
-    return {
+    event = {
         "path": path,
         "method": method,
         "status_code": status_code,
@@ -86,6 +87,22 @@ def normalize_event(data, parser=None, default_status=200):
         "source_ip": str(data.get("source_ip", data.get("client_ip", data.get("remote_addr", ""))))[:64],
         "user_agent": str(data.get("user_agent", data.get("userAgent", data.get("http_user_agent", ""))))[:256],
     }
+    timestamp = data.get("request_timestamp", data.get("timestamp", data.get("time")))
+    if timestamp:
+        if isinstance(timestamp, datetime):
+            event["request_timestamp"] = timestamp.isoformat()
+        else:
+            value = str(timestamp).strip()
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    parsed = datetime.strptime(value, "%d/%b/%Y:%H:%M:%S %z")
+                except ValueError:
+                    parsed = None
+            if parsed is not None:
+                event["request_timestamp"] = parsed.isoformat()
+    return event
 
 
 def parse_apache_line(line):
@@ -95,6 +112,7 @@ def parse_apache_line(line):
     values = match.groupdict()
     return normalize_event({
         "source_ip": values["source_ip"],
+        "request_timestamp": values["timestamp"],
         "method": values["method"],
         "path": values["path"],
         "status_code": values["status_code"],

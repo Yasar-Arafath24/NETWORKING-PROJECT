@@ -54,6 +54,12 @@ function isSuspicious(flow) {
   );
 }
 
+function isNormal(flow) {
+  if (isSuspicious(flow)) return false;
+  return flow?.is_suspicious === false || flow?.is_anomaly === false || flow?.anomaly === false ||
+    ["normal", "benign", "safe"].includes(getClassification(flow));
+}
+
 function getBytes(flow) {
   const bytes = Number(flow?.total_bytes ?? flow?.bytes ?? flow?.byte_count ?? 0);
   return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
@@ -108,6 +114,7 @@ export default function RealtimeTrafficMonitor() {
   const [page, setPage] = useState(1);
   const [captureInterface, setCaptureInterface] = useState("");
   const [captureInterfaces, setCaptureInterfaces] = useState([]);
+  const [captureAvailability, setCaptureAvailability] = useState(null);
   const [replayFile, setReplayFile] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
 
@@ -118,6 +125,9 @@ export default function RealtimeTrafficMonitor() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const isRunning = Boolean(status?.is_running ?? status?.running ?? status?.active);
+  const isError = Boolean(status?.error || error);
+  const monitorState = isError ? "Error" : isRunning ? "Running" : "Stopped";
 
   const pageSize = 10;
   const safeFlows = useMemo(() => Array.isArray(flows) ? flows : [], [flows]);
@@ -155,19 +165,20 @@ export default function RealtimeTrafficMonitor() {
         if (!active) return;
         const interfaces = Array.isArray(response?.interfaces) ? response.interfaces : [];
         setCaptureInterfaces(interfaces);
+        setCaptureAvailability(response?.capture_available === false ? response?.capture_error : null);
         if (interfaces.length > 0) {
           setCaptureInterface((current) => current || interfaces[0]);
         }
       })
-      .catch(() => {});
+      .catch((err) => { if (active) setError(err instanceof Error ? err.message : "Unable to load capture interfaces."); });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    if (!autoRefresh) return undefined;
+    if (!autoRefresh || !isRunning) return undefined;
     const interval = setInterval(() => fetchData(true), 2000);
     return () => clearInterval(interval);
-  }, [autoRefresh, fetchData]);
+  }, [autoRefresh, fetchData, isRunning]);
 
   const protocols = useMemo(() => {
     return [...new Set(safeFlows.map((f) => String(f?.protocol ?? "").trim().toUpperCase()).filter(Boolean))].sort();
@@ -201,20 +212,10 @@ export default function RealtimeTrafficMonitor() {
         return matchesSearch && matchesProtocol && suspicious;
       }
       if (classificationFilter === "normal") {
-        const normal = !suspicious &&
-          (flow?.is_suspicious === false ||
-            flow?.is_anomaly === false ||
-            flow?.anomaly === false ||
-            ["normal", "benign", "safe"].includes(getClassification(flow)));
-        return matchesSearch && matchesProtocol && normal;
+        return matchesSearch && matchesProtocol && isNormal(flow);
       }
       if (classificationFilter === "unclassified") {
-        const normal = !suspicious &&
-          (flow?.is_suspicious === false ||
-            flow?.is_anomaly === false ||
-            flow?.anomaly === false ||
-            ["normal", "benign", "safe"].includes(getClassification(flow)));
-        return matchesSearch && matchesProtocol && !suspicious && !normal;
+        return matchesSearch && matchesProtocol && !suspicious && !isNormal(flow);
       }
       return matchesSearch && matchesProtocol;
     });
@@ -239,23 +240,27 @@ export default function RealtimeTrafficMonitor() {
   async function handleStartCapture() {
     setLoading(true);
     setError("");
+    setStatus((current) => current?.error ? { ...current, error: null } : current);
     try {
       await startLiveCapture(captureInterface.trim() || null);
       await fetchData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start capture");
+      const message = err instanceof Error ? err.message : "Failed to start capture";
+      setError(message);
+      setStatus((current) => ({ ...(current ?? {}), running: false, state: "error", error: message }));
     } finally {
       setLoading(false);
     }
   }
 
   async function handleStartReplay() {
+    setError("");
+    setStatus((current) => current?.error ? { ...current, error: null } : current);
     if (!replayFile.trim()) {
       setError("Please provide a PCAP filename in the datasets directory (e.g., sample.pcap)");
       return;
     }
     setLoading(true);
-    setError("");
     try {
       await startPcapReplay(replayFile.trim());
       await fetchData();
@@ -279,15 +284,13 @@ export default function RealtimeTrafficMonitor() {
     }
   }
 
-  const isRunning = status?.is_running || status?.running || status?.active;
-
   return (
     <section className="tm-root">
       <div className="tm-header">
         <div>
           <p className="tm-eyebrow">NETWORK VISIBILITY</p>
           <h2>Real-Time Traffic Monitor</h2>
-          <p className="tm-muted">Live web traffic monitoring with packet capture and flow analysis.</p>
+          <p className="tm-muted">Capture network packets or replay a PCAP, then inspect actual flow records and model results.</p>
         </div>
         <div className="tm-actions">
           <button type="button" className="tm-button tm-secondary" onClick={() => fetchData()} disabled={refreshing}>
@@ -316,13 +319,27 @@ export default function RealtimeTrafficMonitor() {
             <datalist id="netsentry-capture-interfaces">
               {captureInterfaces.map((iface) => <option key={iface} value={iface} />)}
             </datalist>
+            <small>Windows live capture requires Npcap. PCAP replay works without it.</small>
+            {captureAvailability && <small role="status" style={{ display: "block", color: "#b45309" }}>{captureAvailability}</small>}
           </div>
           <button type="button" className="tm-button tm-primary tm-control-action" onClick={handleStartCapture} disabled={loading || isRunning}>
             <PlayCircle size={16} /> Start capture
           </button>
           <div className="tm-control-group tm-replay-group">
             <label htmlFor="replay-file">Local replay</label>
-            <input id="replay-file" type="text" value={replayFile} onChange={(e) => setReplayFile(e.target.value)} placeholder="datasets/sample.pcap" />
+            <input
+              id="replay-file"
+              type="text"
+              value={replayFile}
+              onChange={(event) => {
+                setReplayFile(event.target.value);
+                setError("");
+                setStatus((current) => current?.error ? { ...current, error: null } : current);
+              }}
+              placeholder="samples/netsentry_sample.pcap"
+              aria-describedby="replay-file-help"
+            />
+            <small id="replay-file-help">Path relative to the datasets folder. Example: samples/netsentry_sample.pcap</small>
           </div>
           <button type="button" className="tm-button tm-secondary tm-control-action" onClick={handleStartReplay} disabled={loading || isRunning}>
             <PlayCircle size={16} /> Replay
@@ -337,7 +354,7 @@ export default function RealtimeTrafficMonitor() {
         </div>
         {status && (
           <div className="tm-status-strip">
-            <span>Status: <strong style={{ color: isRunning ? "#16a34a" : "#64748b" }}>{isRunning ? "Running" : "Stopped"}</strong></span>
+            <span>Status: <strong style={{ color: monitorState === "Running" ? "#16a34a" : monitorState === "Error" ? "#dc2626" : "#64748b" }}>{monitorState}</strong></span>
             <span>Mode: {status.mode || status.type || "—"}</span>
             <span>Interface/File: {status.interface || status.filename || status.pcap_file || status.source || "—"}</span>
             <span>Flows: {formatNumber(status.flow_count ?? status.total_flows ?? safeFlows.length)}</span>
@@ -345,7 +362,7 @@ export default function RealtimeTrafficMonitor() {
             {detectionStatus && <span>Detection: <strong>{detectionStatus.running ? "Running" : "Stopped"}</strong></span>}
           </div>
         )}
-        {error && <div style={{ padding: "0 20px 16px", color: "#dc2626", fontSize: 13 }}>{error}</div>}
+        {(error || status?.error) && <div role="alert" style={{ padding: "0 20px 16px", color: "#dc2626", fontSize: 13 }}>{error || status.error}</div>}
       </div>
 
       <div className="tm-metrics">
@@ -452,6 +469,7 @@ export default function RealtimeTrafficMonitor() {
                 <tbody>
                   {visibleFlows.map((flow, index) => {
                     const suspicious = isSuspicious(flow);
+                    const normal = isNormal(flow);
                     const classification = getClassification(flow) || "unclassified";
                     return (
                       <tr key={flow.id ?? flow.flow_id ?? index}>
@@ -465,9 +483,9 @@ export default function RealtimeTrafficMonitor() {
                         <td data-label="Packets">{formatNumber(flow?.packet_count)}</td>
                         <td data-label="Bytes">{formatBytes(getBytes(flow))}</td>
                         <td data-label="Classification">
-                          <span className={`tm-classification ${suspicious ? "tm-suspicious" : "tm-normal"}`}>
-                            {suspicious ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
-                            {suspicious ? "Suspicious" : classification === "unclassified" ? "Unclassified" : classification.toUpperCase()}
+                          <span className={`tm-classification ${suspicious ? "tm-suspicious" : normal ? "tm-normal" : "tm-unclassified"}`}>
+                            {suspicious ? <ShieldAlert size={13} /> : normal ? <ShieldCheck size={13} /> : <Activity size={13} />}
+                            {suspicious ? "Suspicious" : normal ? classification.toUpperCase() : "Unclassified"}
                           </span>
                         </td>
                       </tr>
@@ -534,6 +552,7 @@ export default function RealtimeTrafficMonitor() {
         .tm-classification { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
         .tm-suspicious { color: #b91c1c; background: #fee2e2; }
         .tm-normal { color: #475569; background: #f1f5f9; }
+        .tm-unclassified { color: #92400e; background: #fef3c7; }
         .tm-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 220px; padding: 30px 20px; color: #64748b; text-align: center; }
         .tm-empty h3 { margin: 0; color: #0f172a; font-size: 16px; }
         .tm-empty p { max-width: 440px; margin: 0; font-size: 13px; line-height: 1.7; }
@@ -557,6 +576,7 @@ export default function RealtimeTrafficMonitor() {
         .tm-control-group { min-width: 0; }
         .tm-control-group label { display: block; margin-bottom: 6px; color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .55px; text-transform: uppercase; }
         .tm-control-group input { width: 100%; height: 40px; padding: 0 11px; border: 1px solid #dde2ea; border-radius: 7px; color: #0f172a; background: #fff; font-size: 13px; }
+        .tm-control-group small { display: block; margin-top: 5px; color: #64748b; font-size: 11px; }
         .tm-control-action { height: 40px; }
         .tm-auto-refresh { height: 40px; display: flex; align-items: center; gap: 7px; justify-content: flex-end; color: #64748b; font-size: 12px; white-space: nowrap; }
         .tm-auto-refresh input { accent-color: #172033; }

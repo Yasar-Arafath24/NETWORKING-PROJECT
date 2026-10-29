@@ -17,9 +17,74 @@ from threading import Event, Lock, Thread
 from time import sleep, time
 from datetime import datetime, timezone
 from typing import Optional
+import logging
 import math
+import sys
 
-from scapy.all import IP, IPv6, TCP, UDP, ICMP, PcapReader, sniff
+from scapy.all import IP, IPv6, TCP, UDP, ICMP, PcapReader, get_if_list, sniff
+from scapy.config import conf
+
+logger = logging.getLogger(__name__)
+
+
+class CaptureProviderUnavailable(RuntimeError):
+    pass
+
+
+class InvalidCaptureInterface(ValueError):
+    pass
+
+
+class CaptureStartupError(RuntimeError):
+    pass
+
+
+def capture_capabilities():
+    """Report Scapy's capture-provider state without attempting elevation."""
+    if sys.platform == "win32" and not bool(conf.use_pcap):
+        return {
+            "available": False,
+            "error": "Npcap is unavailable to Scapy. Install Npcap with the WinPcap API-compatible mode enabled, then restart the terminal and NetSentry.",
+        }
+    try:
+        interfaces = [str(name) for name in get_if_list() if name]
+    except PermissionError:
+        return {
+            "available": False,
+            "error": "Capture permission denied while listing interfaces. Check the Npcap access policy for this Windows account.",
+        }
+    except Exception:
+        return {
+            "available": False,
+            "error": "Capture interfaces could not be enumerated. Check the Npcap installation and permissions.",
+        }
+    if not interfaces:
+        return {
+            "available": False,
+            "error": "No capture interfaces are available. Check the network adapter and capture-driver installation.",
+        }
+    return {"available": True, "error": None}
+
+
+def validate_capture_interface(interface):
+    """Check provider and interface before launching a capture worker."""
+    capabilities = capture_capabilities()
+    if not capabilities["available"]:
+        if "permission denied" in (capabilities["error"] or "").lower():
+            raise PermissionError(capabilities["error"])
+        raise CaptureProviderUnavailable(capabilities["error"])
+    try:
+        interfaces = [str(name) for name in get_if_list() if name]
+    except PermissionError as exc:
+        raise PermissionError(
+            "Capture permission denied while enumerating interfaces. Grant the account access to Npcap; NetSentry will not elevate itself."
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError("Capture interfaces could not be enumerated. Check the Npcap installation and permissions.") from exc
+    if interface and interface not in interfaces:
+        raise InvalidCaptureInterface(
+            "The selected capture interface does not exist. Choose an interface from the available list and refresh it."
+        )
 
 
 class LiveMonitor:
@@ -34,6 +99,7 @@ class LiveMonitor:
         self._mode = None
         self._source = None
         self._started_at = None
+        self._owner_id = None
         self._last_packet_at = None
         self._error = None
 
@@ -229,15 +295,18 @@ class LiveMonitor:
                 "size": packet_size,
             })
 
-    def start_live(self, interface=None):
+    def start_live(self, interface=None, owner_id=None):
         """Start capturing packets from an authorized interface."""
+
+        validate_capture_interface(interface)
 
         return self._start(
             mode="live",
             source=interface,
+            owner_id=owner_id,
         )
 
-    def start_replay(self, pcap_path, speed=1.0):
+    def start_replay(self, pcap_path, speed=1.0, owner_id=None):
         """Replay a PCAP or PCAPNG file in timestamp order."""
 
         path = Path(pcap_path).expanduser().resolve()
@@ -267,9 +336,10 @@ class LiveMonitor:
             mode="replay",
             source=str(path),
             speed=float(speed),
+            owner_id=owner_id,
         )
 
-    def _start(self, mode, source, speed=1.0):
+    def _start(self, mode, source, speed=1.0, owner_id=None):
         """Start the background monitoring worker."""
 
         with self._lock:
@@ -283,6 +353,7 @@ class LiveMonitor:
             self._mode = mode
             self._source = source
             self._started_at = self._timestamp()
+            self._owner_id = owner_id
             self._last_packet_at = None
             self._error = None
 
@@ -302,7 +373,12 @@ class LiveMonitor:
                 name="netsentry-live-monitor",
             )
 
-            self._thread.start()
+            try:
+                self._thread.start()
+            except Exception as exc:
+                self._running = False
+                self._error = "Capture worker could not start. Check the server process and system resources."
+                raise CaptureStartupError(self._error) from exc
 
         return self.status()
 
@@ -316,14 +392,28 @@ class LiveMonitor:
                 self._capture_live(source, stop_event)
 
         except Exception as exc:
+            logger.exception("Live %s worker failed", mode)
             with self._lock:
-                self._error = (
-                    f"{type(exc).__name__}: {exc}"
-                )
+                self._error = self._classify_error(mode, exc)
 
         finally:
             with self._lock:
                 self._running = False
+
+    @staticmethod
+    def _classify_error(mode, exc):
+        if mode == "replay":
+            return "PCAP replay failed. Confirm the file is a readable PCAP/PCAPNG inside the datasets directory."
+        message = str(exc).lower()
+        if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) == 5 or "permission denied" in message or "access is denied" in message:
+            return "Capture permission denied. Grant this account access to the capture interface; administrator permissions may be required by Windows/Npcap. NetSentry will not elevate itself."
+        if "no such device" in message or "interface not found" in message or "unknown interface" in message:
+            return "The selected capture interface is no longer available. Refresh the interface list and select an existing adapter."
+        if sys.platform == "win32" and not bool(conf.use_pcap):
+            return capture_capabilities()["error"]
+        if isinstance(exc, (ValueError, OSError)) and ("interface" in message or "device" in message):
+            return "Invalid capture interface. Select an adapter listed by NetSentry and try again."
+        return "Live capture could not start. Check the capture provider, selected interface, and Windows/Npcap permissions."
 
     def _replay_pcap(self, path, speed, stop_event):
         """Read a capture file and replay its packets."""
@@ -402,6 +492,7 @@ class LiveMonitor:
         with self._lock:
             return {
                 "running": self._running,
+                "state": "error" if self._error else "running" if self._running else "stopped",
                 "mode": self._mode,
                 "source": self._source,
                 "started_at": self._started_at,
@@ -411,6 +502,11 @@ class LiveMonitor:
                 "total_flows": self._total_flows,
                 "error": self._error,
             }
+
+    @property
+    def owner_id(self):
+        with self._lock:
+            return self._owner_id
 
     def get_flows(self, limit=100):
         """Return a bounded list of current flow snapshots."""

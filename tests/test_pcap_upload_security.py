@@ -2,8 +2,10 @@
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from tests.auth_helpers import authenticate_test_client
 
 client = TestClient(app)
+authenticate_test_client(client)
 
 UPLOAD_URL = "/api/v1/pcap/analyze"
 

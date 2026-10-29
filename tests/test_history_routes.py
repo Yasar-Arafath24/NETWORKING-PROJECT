@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.main import app
 from backend.app.models.analysis import AnalysisReport
 from backend.app.services.database import Base, get_db
+from tests.auth_helpers import authenticate_test_client
 
 
 @pytest.fixture
@@ -31,18 +32,20 @@ def history_client():
 
     try:
         with TestClient(app) as client:
-            yield client, session_factory
+            user_id = authenticate_test_client(client)
+            yield client, session_factory, user_id
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
 
 
 def test_history_lists_existing_analysis_reports(history_client):
-    client, session_factory = history_client
+    client, session_factory, user_id = history_client
     with session_factory() as db:
         db.add_all(
             [
                 AnalysisReport(
+                    owner_id=user_id,
                     total_packets=10,
                     total_flows=2,
                     report_data={
@@ -51,6 +54,7 @@ def test_history_lists_existing_analysis_reports(history_client):
                     },
                 ),
                 AnalysisReport(
+                    owner_id=user_id,
                     total_packets=20,
                     total_flows=3,
                     report_data={
@@ -73,9 +77,10 @@ def test_history_lists_existing_analysis_reports(history_client):
 
 
 def test_history_returns_analysis_details_and_404(history_client):
-    client, session_factory = history_client
+    client, session_factory, user_id = history_client
     with session_factory() as db:
         report = AnalysisReport(
+            owner_id=user_id,
             total_packets=10,
             total_flows=1,
             report_data={
@@ -101,7 +106,7 @@ def test_history_returns_analysis_details_and_404(history_client):
 
 
 def test_history_rejects_invalid_limit(history_client):
-    client, _ = history_client
+    client, _, _ = history_client
 
     response = client.get("/api/v1/history?limit=201")
 
