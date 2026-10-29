@@ -155,7 +155,7 @@ export default function TrafficMonitor({
 
   const pageSize = 10;
 
-  const safeFlows = Array.isArray(flows) ? flows : [];
+  const safeFlows = useMemo(() => Array.isArray(flows) ? flows : [], [flows]);
 
   const protocols = useMemo(() => {
     return [

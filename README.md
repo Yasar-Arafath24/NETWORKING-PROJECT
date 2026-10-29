@@ -66,7 +66,9 @@ store and use HTTPS between the agent and NetSentry.
 For local development, the default SQLite database and frontend origins are
 configured automatically. For deployment, set NETSENTRY_DATABASE_URL,
 NETSENTRY_CORS_ORIGINS to the exact frontend origins, and
-NETSENTRY_COOKIE_SECURE=true behind HTTPS. The current account flow does not
+NETSENTRY_COOKIE_SECURE=true behind HTTPS. For separate frontend/API origins, set
+NETSENTRY_COOKIE_SAMESITE=none (HTTPS and NETSENTRY_COOKIE_SECURE=true are required
+for browser SameSite=None cookies). The current account flow does not
 yet include email verification, password reset, account deletion, or
 per-user isolation for the existing process-wide packet-capture worker and
 its saved alerts/flows; those legacy capture records are not tenant-isolated.

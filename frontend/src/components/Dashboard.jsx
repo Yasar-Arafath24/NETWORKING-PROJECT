@@ -5,7 +5,6 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Bell,
-  CheckCircle2,
   ChevronDown,
   CircleHelp,
   Clock,
@@ -394,7 +393,8 @@ export default function Dashboard({ user = null }) {
   }, []);
 
   useEffect(() => {
-    loadHistory();
+    const timer = window.setTimeout(loadHistory, 0);
+    return () => window.clearTimeout(timer);
   }, [loadHistory]);
 
   useEffect(() => {

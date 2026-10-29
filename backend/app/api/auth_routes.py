@@ -80,8 +80,11 @@ def _issue_session(user: User, response: Response, db: Session) -> None:
     db.commit()
     secure = os.getenv("NETSENTRY_COOKIE_SECURE", "false").lower() == "true"
     age = SESSION_DAYS * 86400
-    response.set_cookie(SESSION_COOKIE, token, httponly=True, secure=secure, samesite="lax", path="/", max_age=age)
-    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite="lax", path="/", max_age=age)
+    same_site = os.getenv("NETSENTRY_COOKIE_SAMESITE", "lax").lower()
+    if same_site not in {"lax", "strict", "none"}:
+        same_site = "lax"
+    response.set_cookie(SESSION_COOKIE, token, httponly=True, secure=secure, samesite=same_site, path="/", max_age=age)
+    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite=same_site, path="/", max_age=age)
 
 
 @router.post("/register", status_code=201)
@@ -126,6 +129,10 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
                 raise HTTPException(403, "CSRF token validation failed.")
             session.revoked_at = datetime.now(timezone.utc)
             db.commit()
-    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="lax")
-    response.delete_cookie(CSRF_COOKIE, path="/", samesite="lax")
+    same_site = os.getenv("NETSENTRY_COOKIE_SAMESITE", "lax").lower()
+    if same_site not in {"lax", "strict", "none"}:
+        same_site = "lax"
+    secure = os.getenv("NETSENTRY_COOKIE_SECURE", "false").lower() == "true"
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, secure=secure, samesite=same_site)
+    response.delete_cookie(CSRF_COOKIE, path="/", secure=secure, samesite=same_site)
     return {"status": "signed_out"}

@@ -120,7 +120,7 @@ export default function RealtimeTrafficMonitor() {
   const [refreshing, setRefreshing] = useState(false);
 
   const pageSize = 10;
-  const safeFlows = Array.isArray(flows) ? flows : [];
+  const safeFlows = useMemo(() => Array.isArray(flows) ? flows : [], [flows]);
 
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true);
@@ -144,7 +144,8 @@ export default function RealtimeTrafficMonitor() {
   }, []);
 
   useEffect(() => {
-    fetchData();
+    const timer = window.setTimeout(() => fetchData(), 0);
+    return () => window.clearTimeout(timer);
   }, [fetchData]);
 
   useEffect(() => {

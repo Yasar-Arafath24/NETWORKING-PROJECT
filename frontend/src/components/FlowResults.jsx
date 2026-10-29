@@ -93,8 +93,10 @@ function getEndpoints(flow) {
   ];
 }
 
+const EMPTY_FLOWS = [];
+
 export default function FlowResults({ flows = [] }) {
-  const safeFlows = Array.isArray(flows) ? flows : [];
+  const safeFlows = useMemo(() => Array.isArray(flows) ? flows : EMPTY_FLOWS, [flows]);
 
   const [search, setSearch] = useState("");
   const [protocolFilter, setProtocolFilter] = useState("ALL");

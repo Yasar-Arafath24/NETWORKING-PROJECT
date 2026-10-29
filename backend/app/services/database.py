@@ -11,12 +11,23 @@ DATABASE_PATH = PROJECT_ROOT / "netsentry.db"
 
 DATABASE_URL = os.getenv(
     "NETSENTRY_DATABASE_URL",
-    f"sqlite:///{DATABASE_PATH.as_posix()}",
+    os.getenv(
+        "DATABASE_URL",
+        f"sqlite:///{DATABASE_PATH.as_posix()}",
+    ),
 )
+
+# Normalize scheme for psycopg2
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://") and "+psycopg2" not in DATABASE_URL and "+psycopg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 engine_options = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
+elif DATABASE_URL.startswith("postgresql"):
+    engine_options["pool_pre_ping"] = True
 
 engine = create_engine(DATABASE_URL, **engine_options)
 

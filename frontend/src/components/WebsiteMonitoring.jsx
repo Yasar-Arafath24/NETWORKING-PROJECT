@@ -13,6 +13,7 @@ export default function WebsiteMonitoring({ embedded = false }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [newSite, setNewSite] = useState(null);
+  const [clock, setClock] = useState(0);
   const [form, setForm] = useState({ name: "", url: "https://" });
   const selected = websites.find((site) => site.id === selectedId) || websites[0] || null;
 
@@ -34,8 +35,17 @@ export default function WebsiteMonitoring({ embedded = false }) {
     } catch (err) { setError(err.message); }
   }, []);
 
-  useEffect(() => { loadSites(); }, [loadSites]);
-  useEffect(() => { setEvents([]); loadEvents(selected?.id); }, [selected?.id, loadEvents]);
+  useEffect(() => {
+    const timer = window.setTimeout(loadSites, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSites]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setEvents([]);
+      loadEvents(selected?.id);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selected?.id, loadEvents]);
   useEffect(() => {
     if (!selected?.enabled) return undefined;
     const timer = window.setInterval(() => loadEvents(selected.id), 15000);
@@ -43,7 +53,15 @@ export default function WebsiteMonitoring({ embedded = false }) {
   }, [selected?.id, selected?.enabled, loadEvents]);
 
   useEffect(() => {
-    if (!selected?.enabled) { setConnected(false); return undefined; }
+    const clockTimer = window.setInterval(() => setClock(Date.now()), 30000);
+    const initialTimer = window.setTimeout(() => setClock(Date.now()), 0);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(clockTimer);
+    };
+  }, []);
+  useEffect(() => {
+    if (!selected?.enabled) return undefined;
     const socket = new WebSocket(websiteLiveUrl(selected.id));
     socket.onopen = () => setConnected(true);
     socket.onclose = () => setConnected(false);
@@ -57,7 +75,7 @@ export default function WebsiteMonitoring({ embedded = false }) {
         }
       } catch { /* Ignore malformed messages from an interrupted stream. */ }
     };
-    return () => { socket.close(); setConnected(false); };
+    return () => { socket.close(); };
   }, [selected?.id, selected?.enabled]);
 
   const summary = useMemo(() => ({
@@ -66,15 +84,15 @@ export default function WebsiteMonitoring({ embedded = false }) {
   }), [events]);
   const trafficBars = useMemo(() => {
     const buckets = Array(10).fill(0);
-    const now = Date.now();
+    const now = clock;
     for (const event of events) {
       const age = Math.floor((now - new Date(event.created_at).getTime()) / 60000);
       if (age >= 0 && age < buckets.length) buckets[buckets.length - age - 1] += 1;
     }
     return buckets;
-  }, [events]);
-  const receivingRecently = events.some(
-    (event) => Date.now() - new Date(event.created_at).getTime() < 60000
+  }, [clock, events]);
+  const receivingRecently = clock > 0 && events.some(
+    (event) => clock - new Date(event.created_at).getTime() < 60000
   );
 
   async function submit(event) {
