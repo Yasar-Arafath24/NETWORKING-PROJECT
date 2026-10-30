@@ -1,7 +1,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.services.database import Base
@@ -21,6 +21,12 @@ class AnalysisReport(Base):
     )
     total_flows: Mapped[int] = mapped_column(
         Integer, default=0
+    )
+    filename: Mapped[str] = mapped_column(
+        String(512), default="", nullable=False
+    )
+    suspicious_flows: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
     )
     report_data: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

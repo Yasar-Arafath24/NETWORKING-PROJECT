@@ -29,6 +29,7 @@ from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
 from backend.app.models.user import EmailVerification, User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
+from backend.app.models.traffic_monitoring import AnalysisHistory, TrafficFlowRecord
 
 if engine.dialect.name == "sqlite" and os.getenv("NETSENTRY_ENV", "").lower() == "production":
     raise RuntimeError(

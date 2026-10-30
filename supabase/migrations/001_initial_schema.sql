@@ -74,6 +74,8 @@ create table if not exists public.analysis_reports (
   report_data jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+alter table public.analysis_reports add column if not exists owner_id bigint references public.users(id) on delete cascade;
+alter table public.analysis_reports add column if not exists organization_id bigint references public.organizations(id) on delete cascade;
 create index if not exists ix_analysis_reports_owner_id on public.analysis_reports(owner_id);
 create index if not exists ix_analysis_reports_created_at on public.analysis_reports(created_at desc);
 

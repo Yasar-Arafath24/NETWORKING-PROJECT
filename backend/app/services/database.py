@@ -17,6 +17,21 @@ DATABASE_URL = (
     or f"sqlite:///{DATABASE_PATH.as_posix()}"
 )
 
+# Supabase IPv4/IPv6 pooler URLs require the project reference in the
+# PostgreSQL username for some regions: postgres.<project-ref>.
+if DATABASE_URL.startswith(("postgresql://", "postgres://")):
+    project_ref = os.getenv("SUPABASE_PROJECT_REF", "")
+    if project_ref and "pooler.supabase.com" in DATABASE_URL:
+        prefix, remainder = DATABASE_URL.split("://", 1)
+        userinfo, separator, host_and_database = remainder.partition("@")
+        if separator and userinfo.startswith("postgres:") and not userinfo.startswith(
+            f"postgres.{project_ref}:"
+        ):
+            DATABASE_URL = (
+                f"{prefix}://postgres.{project_ref}:"
+                f"{userinfo[len('postgres:'):]}@{host_and_database}"
+            )
+
 # Normalize scheme for psycopg2
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)

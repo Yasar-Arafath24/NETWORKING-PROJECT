@@ -25,6 +25,7 @@ from backend.app.services.analysis_store import (
 )
 from backend.app.services.database import get_db
 from backend.app.models.analysis import AnalysisReport
+from backend.app.models.traffic_monitoring import AnalysisHistory, TrafficFlowRecord
 from backend.app.models.user import User
 from backend.app.api.auth_routes import get_current_user
 from backend.app.core.upload_validation import (
@@ -79,13 +80,17 @@ class LiveCaptureRequest(BaseModel):
 # DATABASE REPORT HELPER
 # ==================================================
 
-def persist_analysis(response: dict, db: Session, owner_id: int) -> int:
+def persist_analysis(response: dict, db: Session, owner_id: int, filename: str = "") -> int:
     """Persist an analysis response and return its report ID."""
 
     report = AnalysisReport(
         owner_id=owner_id,
+        filename=filename,
         total_packets=int(response.get("total_packets", 0)),
         total_flows=int(response.get("total_flows", 0)),
+        suspicious_flows=int(
+            response.get("suspicious_flows", response.get("anomalies_detected", 0))
+        ),
         report_data=jsonable_encoder(response),
     )
 
@@ -93,6 +98,35 @@ def persist_analysis(response: dict, db: Session, owner_id: int) -> int:
         db.add(report)
         db.commit()
         db.refresh(report)
+
+        db.add(AnalysisHistory(
+            report_id=report.id,
+            owner_id=owner_id,
+            filename=filename,
+            total_packets=report.total_packets,
+            total_flows=report.total_flows,
+            suspicious_flows=report.suspicious_flows,
+        ))
+
+        for index, flow in enumerate(response.get("flows", [])):
+            db.add(TrafficFlowRecord(
+                owner_id=owner_id,
+                report_id=report.id,
+                flow_index=index,
+                src_ip=flow.get("src_ip"),
+                dst_ip=flow.get("dst_ip"),
+                src_port=flow.get("src_port"),
+                dst_port=flow.get("dst_port"),
+                protocol=flow.get("protocol"),
+                packet_count=int(flow.get("packet_count", 0) or 0),
+                total_bytes=int(flow.get("total_bytes", 0) or 0),
+                duration=float(flow.get("duration", 0) or 0),
+                anomaly=bool(flow.get("anomaly", False)),
+                label=str(flow.get("label", "UNASSESSED")),
+                anomaly_score=flow.get("anomaly_score"),
+                flow_data=jsonable_encoder(flow),
+            ))
+        db.commit()
         return report.id
 
     except Exception as exc:
@@ -329,7 +363,7 @@ async def analyze_pcap_upload(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            report_id = persist_analysis(response, db, user.id)
+            report_id = persist_analysis(response, db, user.id, original_filename)
             response["report_id"] = report_id
             save_analysis(response)
 
@@ -398,7 +432,7 @@ async def analyze_pcap_upload(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        report_id = persist_analysis(response, db, user.id)
+        report_id = persist_analysis(response, db, user.id, original_filename)
         response["report_id"] = report_id
         save_analysis(response)
 

@@ -6,7 +6,6 @@ import {
   ArrowUpRight,
   Bell,
   ChevronDown,
-  CircleHelp,
   Clock,
   FileSearch,
   FileText,
@@ -36,7 +35,6 @@ import {
   YAxis,
 } from "recharts";
 
-import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
 import WebsiteMonitoring from "./WebsiteMonitoring";
@@ -58,8 +56,7 @@ const navigation = [
   { label: "Overview", icon: LayoutDashboard },
   { label: "PCAP Analysis", icon: FileSearch },
   { label: "Traffic Monitoring", icon: Activity },
-  { label: "Website Integrations", icon: Globe2 },
-  { label: "Website Traffic", icon: Globe2 },
+  { label: "Website Monitoring", icon: Globe2 },
   { label: "AI Detection", icon: ShieldAlert },
   { label: "Security Alerts", icon: Bell },
   { label: "Analysis History", icon: FileText },
@@ -67,7 +64,6 @@ const navigation = [
 
 const preferenceNavigation = [
   { label: "Settings", icon: Settings },
-  { label: "Help", icon: CircleHelp },
 ];
 
 function GithubIcon() {
@@ -1039,15 +1035,16 @@ export default function Dashboard({ user = null, onSignOut }) {
     );
   }
 
-  function renderWebsiteTraffic() {
+  function renderWebsiteMonitoring() {
     return (
       <>
         <PageHeading
           eyebrow="AUTHORIZED WEBSITE TELEMETRY"
-          title="Website Traffic"
-          description="View access-log events sent by collectors installed on websites you own or are authorized to monitor."
+          title="Website Monitoring"
+          description="Configure authorized website collectors and inspect their live access-log traffic."
           action={primaryAction}
         />
+        <WebsiteIntegrations />
         <WebsiteMonitoring embedded />
       </>
     );
@@ -1465,52 +1462,11 @@ export default function Dashboard({ user = null, onSignOut }) {
               <strong>Backend URL</strong>
               <small>{API_BASE_URL}</small>
             </div>
-
-            <span className="status-neutral">{backendStatus}</span>
           </div>
 
           <div className="system-note">
             This screen displays configuration only. It does not persist
             changes to the backend URL.
-          </div>
-        </section>
-      </>
-    );
-  }
-
-  function renderHelp() {
-    return (
-      <>
-        <PageHeading
-          eyebrow="DOCUMENTATION"
-          title="Help & documentation"
-          description="Quick guidance for using the NetSentry AI dashboard."
-        />
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Getting started</h2>
-              <p>Basic workflow</p>
-            </div>
-
-            <CircleHelp size={20} />
-          </div>
-
-          <ol className="help-steps">
-            <li>Start the FastAPI backend.</li>
-            <li>
-              Open PCAP Analysis and select a .pcap or .pcapng file.
-            </li>
-            <li>Run the analysis and review the returned results.</li>
-            <li>Use Traffic Monitoring to inspect extracted flows.</li>
-            <li>Review Security Alerts and AI Detection.</li>
-            <li>Use Analysis History to review saved reports.</li>
-          </ol>
-
-          <div className="system-note">
-            Keep file-size limits, packet validation, and upload security
-            enforced by the backend.
           </div>
         </section>
       </>
@@ -1525,11 +1481,8 @@ export default function Dashboard({ user = null, onSignOut }) {
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
 
-      case "Website Integrations":
-        return <WebsiteIntegrations />;
-
-      case "Website Traffic":
-        return renderWebsiteTraffic();
+      case "Website Monitoring":
+        return renderWebsiteMonitoring();
 
       case "AI Detection":
         return renderAiDetection();
@@ -1542,9 +1495,6 @@ export default function Dashboard({ user = null, onSignOut }) {
 
       case "Settings":
         return renderSettings();
-
-      case "Help":
-        return renderHelp();
 
       default:
         return renderOverview();
@@ -1626,33 +1576,12 @@ export default function Dashboard({ user = null, onSignOut }) {
               onClick={() => navigateTo(label)}
             >
               <Icon size={18} strokeWidth={1.8} />
-              <span>
-                {label === "Help" ? "Help & documentation" : label}
-              </span>
+              <span>{label}</span>
             </button>
           ))}
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="connection-indicator">
-            <span
-              className="status-dot"
-              style={{
-                background:
-                  backendStatus === "Connected"
-                    ? "#16a34a"
-                    : backendStatus === "Unavailable"
-                      ? "#dc2626"
-                      : "#94a3b8",
-              }}
-            />
-
-            <div>
-              <strong>API connection</strong>
-              <small>{backendStatus}</small>
-            </div>
-          </div>
-
           <p>NetSentry AI · Development</p>
         </div>
       </aside>
@@ -1673,8 +1602,6 @@ export default function Dashboard({ user = null, onSignOut }) {
           </div>
 
           <div className="topbar-actions">
-            <BackendStatus />
-
             <div className="dashboard-search-wrapper">
               <label className="search-box" htmlFor="dashboard-search">
                 <Search size={17} />
@@ -1764,13 +1691,6 @@ export default function Dashboard({ user = null, onSignOut }) {
 
                   <button
                     type="button"
-                    onClick={() => navigateTo("Help")}
-                  >
-                    <CircleHelp size={16} />
-                    Help & documentation
-                  </button>
-                  <button
-                    type="button"
                     onClick={async () => {
                       try {
                         await onSignOut?.();
@@ -1818,6 +1738,26 @@ export default function Dashboard({ user = null, onSignOut }) {
                 </article>
               ))}
             </div>
+            <nav className="footer-quick-links" aria-label="Footer quick links">
+              <span className="footer-quick-links-label">Quick Links</span>
+              {[
+                ["Overview", "Dashboard overview"],
+                ["PCAP Analysis", "Analyze traffic captures"],
+                ["Website Monitoring", "Manage website traffic"],
+                ["Analysis History", "Review saved reports"],
+                ["Settings", "Manage preferences"],
+              ].map(([label], index) => (
+                <button
+                  type="button"
+                  key={label}
+                  className="footer-quick-link"
+                  style={{ "--quick-link-delay": `${index * 35}ms` }}
+                  onClick={() => navigateTo(label)}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
             <div className="developers-footer-bottom">
               <span>NetSentry AI · Network traffic analysis</span>
               <span>Built for clearer network visibility</span>
@@ -1851,6 +1791,56 @@ export default function Dashboard({ user = null, onSignOut }) {
           margin-top: 44px;
           padding-top: 28px;
           border-top: 1px solid #e2e8f0;
+        }
+        .footer-quick-links {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-wrap: wrap;
+          gap: 5px 14px;
+          margin-top: 18px;
+          padding-top: 14px;
+          border-top: 1px solid #edf0f4;
+        }
+        .footer-quick-links-label {
+          color: #64748b;
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+        }
+        .footer-quick-link {
+          position: relative;
+          padding: 3px 0;
+          border: 0;
+          color: #334155;
+          background: transparent;
+          font-size: 9px;
+          cursor: pointer;
+          animation: footer-link-enter .45s both;
+          animation-delay: var(--quick-link-delay);
+          transition: color .2s ease, transform .2s ease;
+        }
+        .footer-quick-link::before {
+          content: "";
+          position: absolute;
+          right: 0;
+          bottom: 0;
+          left: 0;
+          height: 2px;
+          background: linear-gradient(90deg, #172033, #64748b);
+          transform: scaleX(0);
+          transform-origin: right;
+          transition: transform .22s ease;
+        }
+        .footer-quick-link:hover {
+          transform: translateY(-1px);
+          color: #172033;
+        }
+        .footer-quick-link:hover::before { transform: scaleX(1); transform-origin: left; }
+        @keyframes footer-link-enter {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
         }
         .developers-footer-heading > span {
           color: #64748b;
@@ -1969,6 +1959,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           .developer-card { grid-template-columns: 38px minmax(0, 1fr) auto; padding: 11px; }
           .developer-avatar { width: 38px; height: 38px; }
           .developers-footer-bottom { flex-direction: column; gap: 5px; }
+          .footer-quick-links { gap: 3px 10px; }
         }
         @media (prefers-reduced-motion: reduce) {
           .topbar::after { animation: none; transform: scaleX(1); }
