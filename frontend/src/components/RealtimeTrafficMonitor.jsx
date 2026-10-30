@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Download,
@@ -77,6 +77,15 @@ function formatNumber(value) {
   return Number.isFinite(number) ? number.toLocaleString() : "—";
 }
 
+function formatDuration(startedAt, now) {
+  if (!startedAt) return "00:00";
+  const elapsed = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const hours = Math.floor(elapsed / 3600);
+  const minutes = Math.floor((elapsed % 3600) / 60);
+  const seconds = elapsed % 60;
+  return `${hours ? `${String(hours).padStart(2, "0")}:` : ""}${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function escapeCsv(value) {
   const text = String(value ?? "");
   return `"${text.replace(/"/g, '""')}"`;
@@ -125,9 +134,13 @@ export default function RealtimeTrafficMonitor() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [captureOperation, setCaptureOperation] = useState("");
+  const [captureRates, setCaptureRates] = useState({ packetsPerSecond: 0, bytesPerSecond: 0 });
+  const [clock, setClock] = useState(0);
+  const previousCounters = useRef(null);
   const isRunning = Boolean(status?.is_running ?? status?.running ?? status?.active);
   const isError = Boolean(status?.error || error);
-  const monitorState = isError ? "Error" : isRunning ? "Running" : "Stopped";
+  const monitorState = captureOperation || (isError ? "ERROR" : !status ? "CHECKING" : isRunning ? "RUNNING" : "STOPPED");
 
   const pageSize = 10;
   const safeFlows = useMemo(() => Array.isArray(flows) ? flows : [], [flows]);
@@ -137,10 +150,23 @@ export default function RealtimeTrafficMonitor() {
     try {
       const [statusRes, flowsRes, packetsRes, detectionRes] = await Promise.all([
         getLiveMonitoringStatus(),
-        getLiveFlows(),
+        getLiveFlows(1000),
         getLivePackets(),
         getLiveDetectionStatus(),
       ]);
+      const now = Date.now();
+      const counters = { packets: Number(statusRes?.total_packets || 0), bytes: Number(statusRes?.total_bytes || 0), at: now };
+      const previous = previousCounters.current;
+      if (statusRes?.running && previous && now > previous.at) {
+        const seconds = (now - previous.at) / 1000;
+        setCaptureRates({
+          packetsPerSecond: Math.max(0, counters.packets - previous.packets) / seconds,
+          bytesPerSecond: Math.max(0, counters.bytes - previous.bytes) / seconds,
+        });
+      } else if (!statusRes?.running) {
+        setCaptureRates({ packetsPerSecond: 0, bytesPerSecond: 0 });
+      }
+      previousCounters.current = counters;
       setStatus(statusRes ?? null);
       setFlows(flowsRes?.flows ?? []);
       setPackets(packetsRes?.packets ?? []);
@@ -180,12 +206,27 @@ export default function RealtimeTrafficMonitor() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchData, isRunning]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const protocols = useMemo(() => {
     return [...new Set(safeFlows.map((f) => String(f?.protocol ?? "").trim().toUpperCase()).filter(Boolean))].sort();
   }, [safeFlows]);
 
   const suspiciousCount = safeFlows.filter(isSuspicious).length;
-  const totalBytes = safeFlows.reduce((sum, flow) => sum + getBytes(flow), 0);
+  const totalBytes = Number(status?.total_bytes ?? safeFlows.reduce((sum, flow) => sum + getBytes(flow), 0));
+  const totalPackets = Number(status?.total_packets ?? packets.length);
+  const totalFlows = Number(status?.total_flows ?? safeFlows.length);
+
+  function packetClassification(packet) {
+    const flow = safeFlows.find((item) => item.src_ip === packet.src_ip && item.dst_ip === packet.dst_ip &&
+      Number(item.src_port) === Number(packet.src_port) && Number(item.dst_port) === Number(packet.dst_port)) ||
+      safeFlows.find((item) => item.src_ip === packet.dst_ip && item.dst_ip === packet.src_ip &&
+        Number(item.src_port) === Number(packet.dst_port) && Number(item.dst_port) === Number(packet.src_port));
+    return flow?.classification || flow?.label || "UNASSESSED";
+  }
 
   const filteredFlows = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -239,6 +280,7 @@ export default function RealtimeTrafficMonitor() {
 
   async function handleStartCapture() {
     setLoading(true);
+    setCaptureOperation("STARTING");
     setError("");
     setStatus((current) => current?.error ? { ...current, error: null } : current);
     try {
@@ -249,6 +291,7 @@ export default function RealtimeTrafficMonitor() {
       setError(message);
       setStatus((current) => ({ ...(current ?? {}), running: false, state: "error", error: message }));
     } finally {
+      setCaptureOperation("");
       setLoading(false);
     }
   }
@@ -261,18 +304,21 @@ export default function RealtimeTrafficMonitor() {
       return;
     }
     setLoading(true);
+    setCaptureOperation("STARTING");
     try {
       await startPcapReplay(replayFile.trim());
       await fetchData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start replay");
     } finally {
+      setCaptureOperation("");
       setLoading(false);
     }
   }
 
   async function handleStop() {
     setLoading(true);
+    setCaptureOperation("STOPPING");
     setError("");
     try {
       await stopLiveMonitoring();
@@ -280,6 +326,7 @@ export default function RealtimeTrafficMonitor() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to stop monitoring");
     } finally {
+      setCaptureOperation("");
       setLoading(false);
     }
   }
@@ -289,8 +336,8 @@ export default function RealtimeTrafficMonitor() {
       <div className="tm-header">
         <div>
           <p className="tm-eyebrow">NETWORK VISIBILITY</p>
-          <h2>Real-Time Traffic Monitor</h2>
-          <p className="tm-muted">Capture network packets or replay a PCAP, then inspect actual flow records and model results.</p>
+          <h2>Live Network Operations</h2>
+          <p className="tm-muted">Start or stop packet capture, replay a PCAP, and inspect observed packet events and flow detections.</p>
         </div>
         <div className="tm-actions">
           <button type="button" className="tm-button tm-secondary" onClick={() => fetchData()} disabled={refreshing}>
@@ -352,44 +399,53 @@ export default function RealtimeTrafficMonitor() {
             <span>Refresh every 2s</span>
           </label>
         </div>
-        {status && (
+        {
           <div className="tm-status-strip">
-            <span>Status: <strong style={{ color: monitorState === "Running" ? "#16a34a" : monitorState === "Error" ? "#dc2626" : "#64748b" }}>{monitorState}</strong></span>
-            <span>Mode: {status.mode || status.type || "—"}</span>
-            <span>Interface/File: {status.interface || status.filename || status.pcap_file || status.source || "—"}</span>
-            <span>Flows: {formatNumber(status.flow_count ?? status.total_flows ?? safeFlows.length)}</span>
-            <span>Packets: {formatNumber(status.packet_count ?? status.total_packets ?? packets.length)}</span>
+            <span>Status: <strong style={{ color: monitorState === "RUNNING" ? "#16a34a" : monitorState === "ERROR" ? "#dc2626" : "#64748b" }}>{monitorState}</strong></span>
+            <span>Mode: {status?.mode || status?.type || "—"}</span>
+            <span>Interface/File: {status?.interface || status?.filename || status?.pcap_file || status?.source || "—"}</span>
+            <span>Duration: {formatDuration(status?.started_at, clock)}</span>
+            <span>Flows: {formatNumber(status?.flow_count ?? status?.total_flows ?? safeFlows.length)}</span>
+            <span>Packets: {formatNumber(status?.packet_count ?? status?.total_packets ?? packets.length)}</span>
             {detectionStatus && <span>Detection: <strong>{detectionStatus.running ? "Running" : "Stopped"}</strong></span>}
           </div>
-        )}
+        }
         {(error || status?.error) && <div role="alert" style={{ padding: "0 20px 16px", color: "#dc2626", fontSize: 13 }}>{error || status.error}</div>}
       </div>
 
       <div className="tm-metrics">
         <article className="tm-metric">
           <span className="tm-metric-icon"><Activity size={20} /></span>
-          <span className="tm-metric-label">Total flows</span>
-          <strong>{formatNumber(safeFlows.length)}</strong>
-          <small>Live flows</small>
+          <span className="tm-metric-label">Live flows</span>
+          <strong>{formatNumber(totalFlows)}</strong>
+          <small>Observed during this capture session</small>
         </article>
         <article className="tm-metric">
           <span className="tm-metric-icon tm-warning-icon"><ShieldAlert size={20} /></span>
           <span className="tm-metric-label">Suspicious flows</span>
           <strong>{formatNumber(suspiciousCount)}</strong>
-          <small>Flagged for investigation</small>
+          <small>Classified suspicious in observed flows</small>
         </article>
         <article className="tm-metric">
           <span className="tm-metric-icon"><Wifi size={20} /></span>
           <span className="tm-metric-label">Packets</span>
-          <strong>{formatNumber(packets.length)}</strong>
+          <strong>{formatNumber(totalPackets)}</strong>
           <small>Captured packets</small>
         </article>
         <article className="tm-metric">
           <span className="tm-metric-icon"><Download size={20} /></span>
-          <span className="tm-metric-label">Traffic volume</span>
-          <strong>{formatBytes(totalBytes)}</strong>
-          <small>Sum of reported flow bytes</small>
+          <span className="tm-metric-label">Current byte rate</span>
+          <strong>{formatBytes(captureRates.bytesPerSecond)} / sec</strong>
+          <small>Measured from consecutive capture counters</small>
         </article>
+        <article className="tm-metric"><span className="tm-metric-icon"><Activity size={20} /></span><span className="tm-metric-label">Current packet rate</span><strong>{captureRates.packetsPerSecond.toFixed(1)} / sec</strong><small>Measured from consecutive capture counters</small></article>
+        <article className="tm-metric"><span className="tm-metric-icon"><Wifi size={20} /></span><span className="tm-metric-label">Active connections</span><strong>{formatNumber(safeFlows.length)}</strong><small>Flow records currently returned</small></article>
+        <article className="tm-metric"><span className="tm-metric-icon"><Download size={20} /></span><span className="tm-metric-label">Captured bytes</span><strong>{formatBytes(totalBytes)}</strong><small>Backend capture counter</small></article>
+      </div>
+
+      <div className="tm-panel">
+        <div className="tm-panel-heading"><div><h3>Live packet event stream</h3><p className="tm-muted">Most recent actual packet metadata · payloads are not displayed</p></div><Wifi size={19} /></div>
+        {packets.length ? <div className="tm-table-wrapper"><table className="tm-table live-packet-table"><thead><tr><th>Timestamp</th><th>Source IP</th><th>Destination IP</th><th>Source port</th><th>Destination port</th><th>Protocol</th><th>Packet size</th><th>Classification</th></tr></thead><tbody>{[...packets].reverse().map((packet, index) => <tr key={`${packet.timestamp}-${index}`}><td>{packet.timestamp ? new Date(packet.timestamp).toLocaleTimeString() : "—"}</td><td>{packet.src_ip || "—"}</td><td>{packet.dst_ip || "—"}</td><td>{packet.src_port ?? "—"}</td><td>{packet.dst_port ?? "—"}</td><td>{packet.protocol || "—"}</td><td>{formatBytes(packet.size || 0)}</td><td>{packetClassification(packet)}</td></tr>)}</tbody></table></div> : <div className="tm-empty"><Activity size={28} /><h3>No packet events received</h3><p>Start capture or replay a PCAP to populate this stream with observed packet metadata.</p></div>}
       </div>
 
       <div className="tm-panel">

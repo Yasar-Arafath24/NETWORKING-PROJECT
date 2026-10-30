@@ -28,6 +28,8 @@ NGINX_RE = re.compile(
 )
 
 IIS_RE = re.compile(r'^(?P<source_ip>\S+) (?P<path>\S+) (?P<method>\S+) (?P<status_code>\d{3})')
+IIS_DEFAULT_FIELDS = ["date", "time", "s-ip", "cs-method", "cs-uri-stem", "cs-uri-query", "s-port", "cs-username", "c-ip", "cs(User-Agent)", "cs(Referer)", "sc-status", "sc-substatus", "sc-win32-status", "time-taken"]
+_iis_fields = list(IIS_DEFAULT_FIELDS)
 
 
 def stop_collector(_signum, _frame):
@@ -137,10 +139,40 @@ def parse_nginx_line(line):
 
 
 def parse_iis_line(line):
-    fields = line.strip().split()
-    if fields and fields[0].startswith("#"):
+    global _iis_fields
+    stripped = line.strip()
+    if stripped.lower().startswith("#fields:"):
+        _iis_fields = stripped.split(":", 1)[1].strip().split()
         return None
-    match = IIS_RE.match(line.strip())
+    if stripped.startswith("#"):
+        return None
+    fields = stripped.split()
+    if "c-ip" in _iis_fields and "cs-uri-stem" in _iis_fields and "cs-method" in _iis_fields and "sc-status" in _iis_fields:
+        if len(fields) < len(_iis_fields):
+            return None
+        values = dict(zip(_iis_fields, fields))
+        try:
+            status = int(values["sc-status"])
+        except (KeyError, ValueError):
+            return None
+        path = values.get("cs-uri-stem", "/")
+        query = values.get("cs-uri-query", "-")
+        if query not in {"", "-"}:
+            path += "?" + query
+        timestamp = None
+        if values.get("date") and values.get("time"):
+            timestamp = values["date"] + "T" + values["time"]
+        duration = values.get("time-taken", "0")
+        try:
+            duration = max(0, int(duration))
+        except ValueError:
+            duration = 0
+        return normalize_event({
+            "source_ip": values.get("c-ip", ""), "method": values.get("cs-method", "GET"),
+            "path": path, "status_code": status, "duration_ms": duration,
+            "user_agent": values.get("cs(User-Agent)", ""), "request_timestamp": timestamp,
+        })
+    match = IIS_RE.match(stripped)
     if not match:
         return None
     values = match.groupdict()

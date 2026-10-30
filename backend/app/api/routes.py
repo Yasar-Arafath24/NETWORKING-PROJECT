@@ -644,29 +644,17 @@ def get_monitoring_statistics(
     for report in reports:
         data = report.report_data or {}
         summary = data.get("traffic_summary", {})
-
         suspicious_flows += summary.get("suspicious_flows", 0)
         normal_flows += summary.get("normal_flows", 0)
-        unavailable_predictions += summary.get(
-            "unavailable_predictions", 0
-        )
-
+        unavailable_predictions += summary.get("unavailable_predictions", 0)
         assessment = data.get("risk_assessment", {})
         level = assessment.get("risk_level", "UNAVAILABLE")
-
         if level not in risk_levels:
             level = "UNAVAILABLE"
-
         risk_levels[level] += 1
 
     classified_flows = suspicious_flows + normal_flows
-
-    suspicious_rate = (
-        round(suspicious_flows / classified_flows * 100, 2)
-        if classified_flows
-        else 0.0
-    )
-
+    suspicious_rate = round(suspicious_flows / classified_flows * 100, 2) if classified_flows else 0.0
     return {
         "total_reports": len(reports),
         "total_packets_processed": total_packets,
@@ -684,6 +672,126 @@ def get_monitoring_statistics(
         ),
     }
 
+
+@router.get("/monitoring/traffic-analytics")
+def get_historical_traffic_analytics(
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    protocol: str | None = Query(default=None, min_length=1, max_length=16),
+    search: str = Query(default="", max_length=100),
+    skip: int = Query(default=0, ge=0, le=1_000_000),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return owner-scoped historical flow analytics from saved PCAP reports."""
+    if since and until and since > until:
+        raise HTTPException(422, "The start time must be earlier than the end time.")
+    query = db.query(AnalysisReport).filter(AnalysisReport.owner_id == user.id)
+    if since:
+        query = query.filter(AnalysisReport.created_at >= since)
+    if until:
+        query = query.filter(AnalysisReport.created_at <= until)
+    reports = query.order_by(AnalysisReport.created_at.desc(), AnalysisReport.id.desc()).limit(250).all()
+    matching = []
+    all_protocols = set()
+    timeline = {}
+    flow_records_truncated = False
+    for report in reports:
+        data = report.report_data or {}
+        report_flows = data.get("flows", [])
+        if not isinstance(report_flows, list):
+            continue
+        if int(data.get("total_flows", report.total_flows) or 0) > len(report_flows):
+            flow_records_truncated = True
+        created = report.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        bucket = created.strftime("%Y-%m-%d %H:00") if created else "Unknown time"
+        for flow in report_flows:
+            if not isinstance(flow, dict):
+                continue
+            protocol_name = str(flow.get("protocol") or flow.get("transport") or "UNKNOWN").upper()
+            all_protocols.add(protocol_name)
+            source = str(flow.get("src_ip", flow.get("source_ip", "")))
+            destination = str(flow.get("dst_ip", flow.get("destination_ip", "")))
+            source_port = flow.get("src_port", flow.get("source_port", ""))
+            destination_port = flow.get("dst_port", flow.get("destination_port", ""))
+            if protocol and protocol_name != protocol.upper():
+                continue
+            query_text = search.strip().lower()
+            if query_text and not any(query_text in str(value).lower() for value in (
+                source, destination, source_port, destination_port, protocol_name, report.id,
+            )):
+                continue
+            try:
+                packets = max(0, int(flow.get("packet_count", flow.get("packets", 0)) or 0))
+            except (TypeError, ValueError):
+                packets = 0
+            try:
+                byte_count = max(0, int(flow.get("total_bytes", flow.get("bytes", flow.get("byte_count", 0))) or 0))
+            except (TypeError, ValueError):
+                byte_count = 0
+            try:
+                duration = max(0.0, float(flow.get("duration", 0) or 0))
+            except (TypeError, ValueError):
+                duration = 0.0
+            record = {
+                "report_id": report.id,
+                "timestamp": created.isoformat() if created else None,
+                "src_ip": source or "Unknown", "dst_ip": destination or "Unknown",
+                "src_port": source_port, "dst_port": destination_port,
+                "protocol": protocol_name, "packet_count": packets,
+                "total_bytes": byte_count,
+                "duration_seconds": duration,
+                "classification": flow.get("label", flow.get("classification", "UNASSESSED")),
+                "anomaly": bool(flow.get("anomaly", flow.get("is_anomaly", False))),
+            }
+            matching.append(record)
+            timeline_bucket = timeline.setdefault(bucket, {"bytes": 0, "flows": 0, "packets": 0})
+            timeline_bucket["bytes"] += byte_count
+            timeline_bucket["flows"] += 1
+            timeline_bucket["packets"] += packets
+
+    matching.sort(key=lambda row: (row["timestamp"] or "", row["report_id"]), reverse=True)
+    total_matching_records = len(matching)
+    page = matching[skip:skip + limit]
+    flow_packets = sum(row["packet_count"] for row in matching)
+    total_bytes = sum(row["total_bytes"] for row in matching)
+    total_flow_duration = sum(row["duration_seconds"] for row in matching)
+    unfiltered = not protocol and not search.strip()
+    total_packets = sum(report.total_packets for report in reports) if unfiltered else flow_packets
+    total_flows = sum(report.total_flows for report in reports) if unfiltered else total_matching_records
+    protocol_distribution = {}
+    transport_distribution = {"TCP": 0, "UDP": 0, "Other": 0}
+    sources, destinations, ports = {}, {}, {}
+    for row in matching:
+        proto = row["protocol"]
+        protocol_distribution[proto] = protocol_distribution.get(proto, 0) + 1
+        transport = proto if proto in {"TCP", "UDP"} else "Other"
+        transport_distribution[transport] += 1
+        sources[row["src_ip"]] = sources.get(row["src_ip"], 0) + row["packet_count"]
+        destinations[row["dst_ip"]] = destinations.get(row["dst_ip"], 0) + row["packet_count"]
+        for port in (row["src_port"], row["dst_port"]):
+            if str(port).isdigit():
+                ports[str(port)] = ports.get(str(port), 0) + row["packet_count"]
+
+    return {
+        "status": "success", "skip": skip, "limit": limit, "total_flows": total_flows,
+        "flows": page, "total_packets": total_packets, "total_bytes": total_bytes,
+        "total_matching_records": total_matching_records,
+        "average_packet_size": round(total_bytes / flow_packets, 2) if flow_packets else 0,
+        "average_packets_per_minute": round(flow_packets / total_flow_duration * 60, 2) if total_flow_duration else 0,
+        "protocol_distribution": protocol_distribution,
+        "transport_distribution": transport_distribution,
+        "traffic_volume_over_time": [{"time": key, **value} for key, value in sorted(timeline.items())],
+        "top_sources": sorted(({"ip": key, "packets": value} for key, value in sources.items()), key=lambda item: item["packets"], reverse=True)[:10],
+        "top_destinations": sorted(({"ip": key, "packets": value} for key, value in destinations.items()), key=lambda item: item["packets"], reverse=True)[:10],
+        "top_ports": sorted(({"port": key, "packets": value} for key, value in ports.items()), key=lambda item: item["packets"], reverse=True)[:10],
+        "protocols": sorted(all_protocols), "reports_processed": len(reports), "truncated": len(reports) == 250,
+        "flow_records_truncated": flow_records_truncated,
+        "data_source": "saved_pcap_analysis_reports",
+    }
 
 # ==================================================
 # REAL-TIME NETWORK MONITORING API
@@ -1018,6 +1126,7 @@ def get_persisted_network_alerts(
     """Return persisted suspicious-flow alerts."""
 
     from backend.app.models.live_monitoring import NetworkAlert
+    from backend.app.models.website_monitor import MonitoredWebsite, WebsiteSecurityAlert
 
     records = (
         db.query(NetworkAlert)
@@ -1026,24 +1135,49 @@ def get_persisted_network_alerts(
         .limit(limit)
         .all()
     )
+    website_records = (
+        db.query(WebsiteSecurityAlert, MonitoredWebsite.name)
+        .join(MonitoredWebsite, WebsiteSecurityAlert.site_id == MonitoredWebsite.id)
+        .filter(MonitoredWebsite.owner_id == user.id)
+        .order_by(WebsiteSecurityAlert.last_seen.desc())
+        .limit(limit)
+        .all()
+    )
+    alerts = [
+        {
+            "id": record.id,
+            "event_type": "network_flow",
+            "session_id": record.session_id,
+            "flow_id": record.flow_id,
+            "severity": record.severity,
+            "title": record.title,
+            "description": record.description,
+            "anomaly_score": record.anomaly_score,
+            "flow_data": record.flow_data,
+            "created_at": record.created_at,
+        }
+        for record in records
+    ]
+    alerts.extend(
+        {
+            "id": f"website-{alert.id}", "event_type": "website_traffic",
+            "severity": alert.severity, "risk_score": alert.risk_score,
+            "title": f"{alert.title} · {site_name}", "description": alert.explanation,
+            "created_at": alert.last_seen, "first_seen": alert.first_seen,
+            "last_seen": alert.last_seen, "site_id": alert.site_id, "site_name": site_name,
+            "request_path": alert.endpoint, "endpoint": alert.endpoint,
+            "source_ip": alert.source_ip, "category": alert.category,
+            "related_event_count": alert.related_event_count, "status": alert.status,
+        }
+        for alert, site_name in website_records
+    )
+    alerts.sort(key=lambda item: item["created_at"].isoformat() if item["created_at"] else "", reverse=True)
+    alerts = alerts[:limit]
 
     return {
         "status": "success",
-        "total_records": len(records),
-        "alerts": [
-            {
-                "id": record.id,
-                "session_id": record.session_id,
-                "flow_id": record.flow_id,
-                "severity": record.severity,
-                "title": record.title,
-                "description": record.description,
-                "anomaly_score": record.anomaly_score,
-                "flow_data": record.flow_data,
-                "created_at": record.created_at,
-            }
-            for record in records
-        ],
+        "total_records": len(alerts),
+        "alerts": alerts,
     }
 
 

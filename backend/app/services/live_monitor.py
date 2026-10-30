@@ -291,6 +291,8 @@ class LiveMonitor:
                 "timestamp": self._timestamp(),
                 "src_ip": details["src_ip"],
                 "dst_ip": details["dst_ip"],
+                "src_port": details["src_port"],
+                "dst_port": details["dst_port"],
                 "protocol": details["protocol"],
                 "size": packet_size,
             })

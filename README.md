@@ -76,10 +76,35 @@ authenticated WebSocket. Install a server-side collector on the monitored
 site and POST JSON events to /api/v1/website-ingest/{site_id}/events with
 Authorization: Bearer <site-ingest-key>. The site key is only shown when
 created. The collector should send status code, path, method, duration, and
-optional request metadata including the original request timestamp. Current
-heuristics flag unusually high request volume as a provisional signal. 4xx/5xx
-HTTP responses are displayed as status codes and are not treated as attacks.
-NetSentry does not fetch a URL to obtain visitor traffic.
+optional request metadata including the original request timestamp. A separate
+deterministic website-event rule engine evaluates sensitive paths, multi-path
+scanning, repeated failed login requests, source/site/endpoint request rates,
+rate surges, repeated HTTP error patterns, repeated slow requests, unusual HTTP
+methods, and configured scanner user-agent signatures. One ordinary HTTP error
+does not create an alert. Rules attach category, evidence, classification, and
+a 0–100 risk score to the received event. Scores map to LOW (0–24), MEDIUM
+(25–49), HIGH (50–74), and CRITICAL (75–100). Evidence weights are added once
+per category and capped at 100; defaults and thresholds can be configured in
+`.env.example`. A flagged request is a heuristic finding, not proof of an
+attack. NetSentry does not fetch a URL to obtain visitor traffic.
+
+Repeated findings are grouped into website incidents. Authenticated endpoints
+include `GET /api/v1/websites/{site_id}/alerts`, `GET
+/api/v1/websites/{site_id}/alerts/{alert_id}`, `PATCH
+/api/v1/websites/{site_id}/alerts/{alert_id}` (status values `OPEN`,
+`INVESTIGATING`, `RESOLVED`, `FALSE_POSITIVE`), and `GET
+/api/v1/websites/analytics?site_id={site_id}`. Website ownership is checked for
+all these operations. Event records retain detector metadata in the existing
+JSON event payload; startup creates the new incident and status-history tables
+without requiring changes to existing event rows.
+
+The existing ML model consumes twelve numeric network-flow fields (packet and
+byte counts, direction totals, and duration). Those inputs do not match website
+request events, so the website detector deliberately does not call that model.
+Website API responses report `ml_status=unavailable_incompatible_features`;
+all current website findings are marked HEURISTIC. No website ML score is
+claimed. A separately trained and validated website-event model would be
+required before adding that classification.
 
 For an Nginx JSON-lines access log, configure a format with fields such as
 path, method, status_code, duration_ms, response_bytes, source_ip, and
@@ -108,8 +133,58 @@ Npcap and appropriate capture permissions. PCAP replay does not require Npcap.
 
 Existing Supabase databases should apply migrations `002_website_request_timestamp.sql`,
 `003_google_auth.sql`, `004_live_monitor_ownership.sql`, and
-`005_email_verification.sql` if they have not been
-applied already. Local SQLite startup applies the additive columns automatically.
+`005_email_verification.sql`, `006_website_platform.sql`, and
+`007_website_security_alerts.sql`, and `008_website_collector_revocation.sql` if they have not been applied already. Local
+SQLite startup applies the additive columns and creates new tables automatically.
+
+The **Website Integrations** page reuses website registration, token rotation,
+event history, and alert APIs. `GET /api/v1/websites` returns per-owner event
+counts, anomaly counts, last successful event time, and an activity status.
+Status is based on actual ingestion timestamps (`WAITING_FOR_EVENTS` before the
+first event, `RECEIVING` for very recent ingestion, `CONNECTED` while within
+`NETSENTRY_WEBSITE_CONNECTED_SECONDS`, `IDLE` after that window, `DISCONNECTED`
+when intake is paused, or `REVOKED` after the collector credential is revoked).
+The status and Test Connection endpoints query accepted database events; they
+do not synthesize heartbeats. A collector process is not directly observable
+until it sends a valid event. New registrations can select a
+platform; this is stored on the existing website record. Duplicate normalized
+website URLs for one owner return HTTP 409. Registration and token rotation
+share a per-user limit of five token-generating operations per minute. The
+one-time raw token remains available only in the successful registration or
+rotation response.
+
+`frontend/.env.example` separates the dashboard API proxy from the collector's
+reachable backend URL. For local development, collectors on the same computer
+send to `http://127.0.0.1:8000`; `http://localhost:5173` is the frontend only.
+Set `VITE_COLLECTOR_API_URL` to the public HTTPS backend origin for remote
+collector hosts.
+
+## Traffic monitoring pages
+
+The workspace keeps three traffic views separate:
+
+- **Traffic Monitoring** reads owner-scoped saved PCAP analysis reports through
+  `GET /api/v1/monitoring/traffic-analytics`. It shows historical flow
+  statistics, protocol/IP/port breakdowns, report-time trends, and a searchable
+  paginated flow table. It does not start a capture.
+- **Real-Time Monitoring** owns Scapy interface capture and local PCAP replay.
+  Status, packet metadata, counters, rates, and detection summaries come from
+  the live-monitoring APIs. On Windows, live interface capture requires Npcap
+  and appropriate interface permissions; replay does not.
+- **Website Traffic** shows authorized website access-log telemetry delivered
+  by the configured collector. Adding a website URL alone does not grant access
+  to its visitor traffic or create telemetry.
+
+Historical charts use saved analysis timestamps because the existing PCAP
+reports retain flow summaries, not per-packet timestamps. The analytics API
+limits its summary window to the latest 250 reports, and existing report data
+may retain only a bounded subset of flow rows.
+
+The setup wizard uses `scripts/generic_traffic_collector.py`, which accepts
+`jsonl`, `apache`, `nginx`, and `iis` formats. IIS parsing follows its `#Fields:`
+header. Keep `NETSENTRY_INGEST_TOKEN` on the collector server, copy the collector
+script there, use an API origin reachable from that server, then generate a new
+request on the website after starting the collector to verify real ingestion.
 
 Run the frontend and backend from the repository root in separate PowerShell
 terminals:

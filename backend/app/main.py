@@ -20,6 +20,8 @@ from backend.app.models.user import EmailVerification, User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
 
 Base.metadata.create_all(bind=engine)
+with engine.begin() as connection:
+    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_website_events_site_created ON website_traffic_events (site_id, created_at)"))
 for table_name in ("live_flow_records", "network_alerts"):
     columns = {column["name"] for column in inspect(engine).get_columns(table_name)}
     if "owner_id" not in columns:
@@ -49,6 +51,14 @@ if "authorization_confirmed" not in website_columns:
             "ALTER TABLE monitored_websites ADD COLUMN "
             f"authorization_confirmed BOOLEAN NOT NULL DEFAULT {default}"
         ))
+    website_columns.add("authorization_confirmed")
+if "platform" not in website_columns:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE monitored_websites ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'custom'"))
+if "collector_revoked_at" not in website_columns:
+    timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE monitored_websites ADD COLUMN collector_revoked_at {timestamp_type} NULL"))
 event_columns = {column["name"] for column in inspect(engine).get_columns("website_traffic_events")}
 if "request_timestamp" not in event_columns:
     timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"

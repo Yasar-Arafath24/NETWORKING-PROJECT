@@ -11,6 +11,7 @@ import {
   FileSearch,
   FileText,
   Gauge,
+  Globe2,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -40,11 +41,16 @@ import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
 import RealtimeTrafficMonitor from "./RealtimeTrafficMonitor";
 import WebsiteMonitoring from "./WebsiteMonitoring";
+import WebsiteAnomalyAnalytics from "./WebsiteAnomalyAnalytics";
+import WebsiteIntegrations from "./WebsiteIntegrations";
+import HistoricalTrafficAnalytics from "./HistoricalTrafficAnalytics";
 
 import {
   uploadPcap,
   getAnalysisHistory,
   getLatestAnalysis,
+  getSecurityAlerts,
+  setWebsiteAlertStatus,
   checkBackendConnection,
   API_BASE_URL,
 } from "../services/api";
@@ -53,7 +59,9 @@ const navigation = [
   { label: "Overview", icon: LayoutDashboard },
   { label: "PCAP Analysis", icon: FileSearch },
   { label: "Traffic Monitoring", icon: Activity },
-  { label: "Real-Time Traffic", icon: Wifi },
+  { label: "Website Integrations", icon: Globe2 },
+  { label: "Real-Time Monitoring", icon: Wifi },
+  { label: "Website Traffic", icon: Globe2 },
   { label: "AI Detection", icon: ShieldAlert },
   { label: "Security Alerts", icon: Bell },
   { label: "Analysis History", icon: FileText },
@@ -369,6 +377,8 @@ export default function Dashboard({ user = null, onSignOut }) {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
+  const [persistedAlerts, setPersistedAlerts] = useState([]);
+  const [securityAlertsError, setSecurityAlertsError] = useState("");
   const [uploadError, setUploadError] = useState("");
 
   const [backendStatus, setBackendStatus] = useState("Checking");
@@ -419,6 +429,27 @@ export default function Dashboard({ user = null, onSignOut }) {
     }
   }, []);
 
+  const loadPersistedAlerts = useCallback(async () => {
+    try {
+      const result = await getSecurityAlerts({ limit: 100 });
+      setPersistedAlerts(Array.isArray(result?.alerts) ? result.alerts : []);
+      setSecurityAlertsError("");
+    } catch (error) {
+      setSecurityAlertsError(error instanceof Error ? error.message : "Unable to load security alerts.");
+    }
+  }, []);
+
+  async function changeWebsiteAlertStatus(alert, status) {
+    const alertId = Number(String(alert.id).replace(/^website-/, ""));
+    if (!alert.site_id || !Number.isInteger(alertId)) return;
+    try {
+      await setWebsiteAlertStatus(alert.site_id, alertId, status);
+      await loadPersistedAlerts();
+    } catch (error) {
+      setSecurityAlertsError(error instanceof Error ? error.message : "Unable to update alert status.");
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(loadHistory, 0);
     return () => window.clearTimeout(timer);
@@ -428,6 +459,12 @@ export default function Dashboard({ user = null, onSignOut }) {
     const timer = window.setTimeout(loadLatestAnalysis, 0);
     return () => window.clearTimeout(timer);
   }, [loadLatestAnalysis]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(loadPersistedAlerts, 0);
+    const timer = window.setInterval(loadPersistedAlerts, 15000);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [loadPersistedAlerts]);
 
   useEffect(() => {
     let active = true;
@@ -526,7 +563,10 @@ export default function Dashboard({ user = null, onSignOut }) {
     [flows]
   );
 
-  const alerts = useMemo(() => getAlerts(analysis), [analysis]);
+  const alerts = useMemo(() => {
+    const combined = [...getAlerts(analysis), ...persistedAlerts];
+    return combined.sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0));
+  }, [analysis, persistedAlerts]);
 
   const criticalAlerts = alerts.filter(
     (alert) => getSeverity(alert) === "critical"
@@ -535,6 +575,10 @@ export default function Dashboard({ user = null, onSignOut }) {
   const highAlerts = alerts.filter(
     (alert) => getSeverity(alert) === "high"
   );
+  const mediumAlerts = alerts.filter((alert) => getSeverity(alert) === "medium");
+  const lowAlerts = alerts.filter((alert) => getSeverity(alert) === "low");
+  const openAlerts = alerts.filter((alert) => !["RESOLVED", "FALSE_POSITIVE"].includes(String(alert.status || "OPEN").toUpperCase()));
+  const resolvedAlerts = alerts.filter((alert) => ["RESOLVED", "FALSE_POSITIVE"].includes(String(alert.status || "").toUpperCase()));
 
   const packetTotal =
     getPacketTotal(analysis) ??
@@ -987,9 +1031,23 @@ export default function Dashboard({ user = null, onSignOut }) {
     return (
       <>
         <PageHeading
-          eyebrow="NETWORK VISIBILITY"
+          eyebrow="HISTORICAL NETWORK ANALYTICS"
           title="Traffic Monitoring"
-          description="Capture authorized network-interface traffic or replay a local PCAP, then inspect live network flows."
+          description="Analyze saved PCAP traffic, compare historical flow patterns, and investigate protocols, addresses, and ports."
+          action={primaryAction}
+        />
+        <HistoricalTrafficAnalytics />
+      </>
+    );
+  }
+
+  function renderRealtimeMonitoring() {
+    return (
+      <>
+        <PageHeading
+          eyebrow="LIVE NETWORK OPERATIONS"
+          title="Real-Time Monitoring"
+          description="Capture current packets from an available interface or replay a local PCAP. Live counters and detections update only from observed traffic."
           action={primaryAction}
         />
         <RealtimeTrafficMonitor />
@@ -997,13 +1055,13 @@ export default function Dashboard({ user = null, onSignOut }) {
     );
   }
 
-  function renderRealtimeTraffic() {
+  function renderWebsiteTraffic() {
     return (
       <>
         <PageHeading
-          eyebrow="NETWORK VISIBILITY"
-          title="Real-Time Traffic Monitoring"
-          description="Monitor authorized website request telemetry from its server-side log collector."
+          eyebrow="AUTHORIZED WEBSITE TELEMETRY"
+          title="Website Traffic"
+          description="View access-log events sent by collectors installed on websites you own or are authorized to monitor."
           action={primaryAction}
         />
         <WebsiteMonitoring embedded />
@@ -1017,7 +1075,7 @@ export default function Dashboard({ user = null, onSignOut }) {
         <PageHeading
           eyebrow="MACHINE LEARNING"
           title="AI Detection"
-          description="Review anomaly classifications returned by the latest network traffic analysis."
+          description="Review network-flow model results and rule-based anomaly analytics from your website access logs."
           action={primaryAction}
         />
 
@@ -1050,6 +1108,8 @@ export default function Dashboard({ user = null, onSignOut }) {
             icon={Network}
           />
         </section>
+
+        <WebsiteAnomalyAnalytics />
 
         <section className="panel">
           <div className="panel-heading">
@@ -1146,7 +1206,7 @@ export default function Dashboard({ user = null, onSignOut }) {
         <PageHeading
           eyebrow="SECURITY OPERATIONS"
           title="Security Alerts"
-          description="Review alert records and suspicious flows from the latest analysis."
+          description="Review website traffic heuristics, live network alerts, and suspicious flows."
           action={primaryAction}
         />
 
@@ -1172,6 +1232,11 @@ export default function Dashboard({ user = null, onSignOut }) {
             icon={ShieldAlert}
           />
 
+          <MetricCard title="Medium alerts" value={formatNumber(mediumAlerts.length)} description="Medium severity findings" icon={ShieldAlert} />
+          <MetricCard title="Low alerts" value={formatNumber(lowAlerts.length)} description="Low severity findings" icon={ShieldCheck} />
+          <MetricCard title="Open alerts" value={formatNumber(openAlerts.length)} description="Open or under investigation" icon={Bell} />
+          <MetricCard title="Resolved alerts" value={formatNumber(resolvedAlerts.length)} description="Resolved or marked false positive" icon={ShieldCheck} />
+
           <MetricCard
             title="Suspicious flows"
             value={formatNumber(suspiciousFlows.length)}
@@ -1184,22 +1249,17 @@ export default function Dashboard({ user = null, onSignOut }) {
           <div className="panel-heading">
             <div>
               <h2>Analysis alerts</h2>
-              <p>Alert information from the current analysis response</p>
+              <p>Alerts refresh automatically and include website collector heuristics.</p>
             </div>
 
             <Bell size={20} />
           </div>
 
-          {!analysis ? (
+          {securityAlertsError && <div className="website-error" role="alert">{securityAlertsError}</div>}
+          {alerts.length === 0 && suspiciousFlows.length === 0 ? (
             <EmptyState
-              title="No analysis available"
-              description="Upload a PCAP file before reviewing alerts."
-              action={primaryAction}
-            />
-          ) : alerts.length === 0 && suspiciousFlows.length === 0 ? (
-            <EmptyState
-              title="No alert records returned"
-              description="The latest response contains no recognized alert entries or suspicious flow flags. This does not prove the traffic is safe."
+              title="No alerts yet"
+              description="Website traffic heuristics appear here after your authorized collector sends flagged request events. HTTP error codes alone are not treated as attacks."
             />
           ) : (
             <>
@@ -1229,6 +1289,14 @@ export default function Dashboard({ user = null, onSignOut }) {
                             <span className="alert-detail">
                               Source: {alert.source_ip ?? alert.src_ip}
                             </span>
+                          )}
+
+                          {alert.event_type === "website_traffic" && (
+                            <>
+                              <span className="alert-detail">Website: {alert.site_name} · {alert.category || "website traffic"} · {alert.endpoint || alert.request_path} · Risk {alert.risk_score ?? "—"}/100 · {alert.related_event_count || 1} related event(s)</span>
+                              <span className="alert-detail">Status: {alert.status || "OPEN"} · First seen {formatDate(alert.first_seen || alert.created_at)} · Last seen {formatDate(alert.last_seen || alert.created_at)}</span>
+                              {alert.status !== "RESOLVED" && alert.status !== "FALSE_POSITIVE" && <div className="website-alert-controls"><button className="secondary-button" onClick={() => changeWebsiteAlertStatus(alert, "INVESTIGATING")}>Investigate</button><button className="secondary-button" onClick={() => changeWebsiteAlertStatus(alert, "RESOLVED")}>Resolve</button><button className="secondary-button" onClick={() => changeWebsiteAlertStatus(alert, "FALSE_POSITIVE")}>False positive</button></div>}
+                            </>
                           )}
 
                           {(alert.destination_ip || alert.dst_ip) && (
@@ -1473,8 +1541,14 @@ export default function Dashboard({ user = null, onSignOut }) {
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
 
-      case "Real-Time Traffic":
-        return renderRealtimeTraffic();
+      case "Website Integrations":
+        return <WebsiteIntegrations />;
+
+      case "Real-Time Monitoring":
+        return renderRealtimeMonitoring();
+
+      case "Website Traffic":
+        return renderWebsiteTraffic();
 
       case "AI Detection":
         return renderAiDetection();
