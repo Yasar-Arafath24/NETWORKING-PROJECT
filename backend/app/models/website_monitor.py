@@ -18,8 +18,13 @@ class MonitoredWebsite(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     platform: Mapped[str] = mapped_column(String(20), default="custom", nullable=False)
+    integration_method: Mapped[str] = mapped_column(String(32), default="generic_jsonl", nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     collector_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collector_status: Mapped[str] = mapped_column(String(16), default="UNKNOWN", nullable=False)
+    collector_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collector_last_error: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    collector_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     authorization_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -27,10 +32,14 @@ class MonitoredWebsite(Base):
 
 class WebsiteTrafficEvent(Base):
     __tablename__ = "website_traffic_events"
-    __table_args__ = (Index("ix_website_events_site_created", "site_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_website_events_site_created", "site_id", "created_at"),
+        Index("uq_website_events_site_event_id", "site_id", "event_id", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("monitored_websites.id", ondelete="CASCADE"), index=True, nullable=False)
+    event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     request_path: Mapped[str] = mapped_column(String(512), nullable=False)
     method: Mapped[str] = mapped_column(String(12), nullable=False)
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)

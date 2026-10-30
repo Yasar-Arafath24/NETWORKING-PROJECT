@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.api.auth_routes import get_current_user
@@ -28,18 +29,39 @@ _clients: dict[int, set[WebSocket]] = defaultdict(set)
 _ingest_times: dict[int, deque[float]] = defaultdict(deque)
 _ingest_lock = threading.Lock()
 _rotation_times: dict[int, deque[float]] = defaultdict(deque)
+_health_times: dict[int, deque[float]] = defaultdict(deque)
 logger = logging.getLogger(__name__)
 WEBSITE_PLATFORMS = ("custom", "nodejs", "python", "php", "wordpress", "nginx", "apache", "iis")
+PLATFORM_METHODS = {
+    "custom": ("generic_jsonl",),
+    "nodejs": ("nodejs_jsonl",),
+    "python": ("fastapi_jsonl",),
+    "php": ("php_jsonl",),
+    "wordpress": ("apache_access_log", "nginx_access_log"),
+    "nginx": ("nginx_access_log",),
+    "apache": ("apache_access_log",),
+    "iis": ("iis_w3c_log",),
+}
+METHOD_FORMATS = {
+    "generic_jsonl": "jsonl", "nodejs_jsonl": "jsonl", "fastapi_jsonl": "jsonl", "php_jsonl": "jsonl",
+    "apache_access_log": "apache", "nginx_access_log": "nginx", "iis_w3c_log": "iis",
+}
+
+
+def _default_method(platform: str) -> str:
+    return PLATFORM_METHODS.get(platform, PLATFORM_METHODS["custom"])[0]
 
 
 class WebsiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     url: str = Field(min_length=8, max_length=2048)
     platform: str = Field(default="custom", pattern="^(custom|nodejs|python|php|wordpress|nginx|apache|iis)$")
+    integration_method: str | None = Field(default=None, pattern="^(generic_jsonl|nodejs_jsonl|fastapi_jsonl|php_jsonl|apache_access_log|nginx_access_log|iis_w3c_log)$")
     authorization_confirmed: bool
 
 
 class WebsiteEventInput(BaseModel):
+    event_id: str | None = Field(default=None, max_length=128, pattern="^[A-Za-z0-9_.:-]+$")
     path: str = Field(default="/", max_length=512)
     method: str = Field(default="GET", max_length=12)
     status_code: int = Field(ge=100, le=599)
@@ -50,12 +72,28 @@ class WebsiteEventInput(BaseModel):
     request_timestamp: datetime | None = None
 
 
+class CollectorHealthInput(BaseModel):
+    status: str = Field(pattern="^(RUNNING|STOPPED|ERROR)$")
+    error: str = Field(default="", max_length=1000)
+    version: str = Field(default="", max_length=32)
+
+
 class WebsiteAlertStatusInput(BaseModel):
     status: str = Field(pattern="^(OPEN|INVESTIGATING|RESOLVED|FALSE_POSITIVE)$")
 
 
 def _site_json(site: MonitoredWebsite, *, token: str | None = None) -> dict:
-    payload = {"id": site.id, "name": site.name, "url": site.url, "platform": getattr(site, "platform", "custom"), "enabled": site.enabled, "collector_revoked": bool(site.collector_revoked_at), "created_at": site.created_at}
+    payload = {
+        "id": site.id, "name": site.name, "url": site.url,
+        "platform": getattr(site, "platform", "custom"),
+        "integration_method": getattr(site, "integration_method", "generic_jsonl"),
+        "enabled": site.enabled, "collector_revoked": bool(site.collector_revoked_at),
+        "collector_process_status": site.collector_status,
+        "collector_last_seen_at": site.collector_last_seen_at,
+        "collector_last_error": site.collector_last_error,
+        "collector_last_error_at": site.collector_last_error_at,
+        "created_at": site.created_at,
+    }
     if token:
         payload["ingest_token"] = token
     return payload
@@ -68,14 +106,39 @@ def _owned_site(db: Session, site_id: int, user_id: int) -> MonitoredWebsite:
     return site
 
 
-def _connection_state(enabled: bool, last_event: datetime | None, now: datetime | None = None, revoked_at: datetime | None = None) -> str:
+def _connection_state(
+    enabled: bool,
+    last_event: datetime | None,
+    now: datetime | None = None,
+    revoked_at: datetime | None = None,
+    collector_status: str = "UNKNOWN",
+    collector_last_seen: datetime | None = None,
+) -> str:
     if revoked_at:
         return "REVOKED"
     if not enabled:
         return "DISCONNECTED"
-    if last_event is None:
-        return "WAITING_FOR_EVENTS"
     now = now or datetime.now(timezone.utc)
+    if collector_status == "ERROR":
+        return "ERROR"
+    if collector_status == "TOKEN_INVALID":
+        return "TOKEN_INVALID"
+    stale_seconds = 45
+    if collector_last_seen:
+        if collector_last_seen.tzinfo is None:
+            collector_last_seen = collector_last_seen.replace(tzinfo=timezone.utc)
+        collector_age = max(0.0, (now - collector_last_seen).total_seconds())
+        if collector_status == "STOPPED" or collector_age > stale_seconds:
+            return "DISCONNECTED"
+        if not last_event:
+            return "CONNECTED"
+        if last_event.tzinfo is None:
+            last_event = last_event.replace(tzinfo=timezone.utc)
+        if max(0.0, (now - last_event).total_seconds()) <= min(15, stale_seconds):
+            return "RECEIVING"
+        return "CONNECTED"
+    if last_event is None:
+        return "NOT_CONFIGURED" if collector_status in {"UNKNOWN", "NOT_CONFIGURED"} else "WAITING_FOR_EVENTS"
     if last_event.tzinfo is None:
         last_event = last_event.replace(tzinfo=timezone.utc)
     age = max(0.0, (now - last_event).total_seconds())
@@ -87,7 +150,7 @@ def _connection_state(enabled: bool, last_event: datetime | None, now: datetime 
         return "RECEIVING"
     if age <= connected_seconds:
         return "CONNECTED"
-    return "IDLE"
+    return "DISCONNECTED"
 
 
 def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
@@ -117,13 +180,18 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         status_distribution[f"{status_code // 100}xx"] += count
     return {
         "site_id": site.id,
-        "status": _connection_state(site.enabled, last_event_aware, now, site.collector_revoked_at),
+        "status": _connection_state(site.enabled, last_event_aware, now, site.collector_revoked_at,
+                                    site.collector_status, site.collector_last_seen_at),
         "enabled": site.enabled,
         "verified": bool(total_events),
         "total_events": int(total_events or 0),
         "anomaly_count": int(anomaly_count or 0),
         "last_event_received": last_event_aware.isoformat() if last_event_aware else None,
         "collector_last_seen": last_event_aware.isoformat() if last_event_aware else None,
+        "collector_last_seen_at": site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None,
+        "collector_process_status": site.collector_status,
+        "latest_ingestion_error": site.collector_last_error or None,
+        "latest_ingestion_error_at": site.collector_last_error_at.isoformat() if site.collector_last_error_at else None,
         "requests_per_minute": int(requests_per_minute),
         "status_distribution": status_distribution,
         "response_bytes": int(response_bytes or 0),
@@ -155,9 +223,15 @@ def add_website(payload: WebsiteCreate, user: User = Depends(get_current_user), 
     duplicate = db.query(MonitoredWebsite.id).filter_by(owner_id=user.id, url=normalized_url).first()
     if duplicate:
         raise HTTPException(409, "This website is already registered in your account.")
+    method = payload.integration_method or _default_method(payload.platform)
+    if method not in PLATFORM_METHODS[payload.platform]:
+        raise HTTPException(422, "Choose an integration method supported by the selected platform.")
     _check_token_operation_rate(user.id)
     token = secrets.token_urlsafe(36)
-    site = MonitoredWebsite(name=name, url=normalized_url, platform=payload.platform, token_hash=hashlib.sha256(token.encode()).hexdigest(), owner_id=user.id, authorization_confirmed=True)
+    site = MonitoredWebsite(name=name, url=normalized_url, platform=payload.platform,
+                            integration_method=method, token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                            owner_id=user.id, authorization_confirmed=True,
+                            collector_status="NOT_CONFIGURED")
     db.add(site)
     db.commit()
     db.refresh(site)
@@ -187,10 +261,15 @@ def list_websites(user: User = Depends(get_current_user), db: Session = Depends(
         last_event = site_stats["last_event_received"]
         if last_event and last_event.tzinfo is None:
             last_event = last_event.replace(tzinfo=timezone.utc)
-        status = _connection_state(site.enabled, last_event, now, site.collector_revoked_at)
+        status = _connection_state(site.enabled, last_event, now, site.collector_revoked_at,
+                                   site.collector_status, site.collector_last_seen_at)
         data.update(site_stats)
         data["last_event_received"] = last_event.isoformat() if last_event else None
         data["collector_last_seen"] = last_event.isoformat() if last_event else None
+        data["collector_last_seen_at"] = site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None
+        data["collector_process_status"] = site.collector_status
+        data["latest_ingestion_error"] = site.collector_last_error or None
+        data["latest_ingestion_error_at"] = site.collector_last_error_at.isoformat() if site.collector_last_error_at else None
         data["verified"] = bool(site_stats["total_events"])
         data["collector_revoked"] = bool(site.collector_revoked_at)
         data["integration_status"] = status
@@ -231,17 +310,24 @@ async def set_website_enabled(
     site_id: int,
     enabled: bool | None = None,
     platform: str | None = Query(default=None, pattern="^(custom|nodejs|python|php|wordpress|nginx|apache|iis)$"),
+    integration_method: str | None = Query(default=None, pattern="^(generic_jsonl|nodejs_jsonl|fastapi_jsonl|php_jsonl|apache_access_log|nginx_access_log|iis_w3c_log)$"),
     user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     site = _owned_site(db, site_id, user.id)
-    if enabled is None and platform is None:
-        raise HTTPException(422, "Provide an enabled state or platform.")
+    if enabled is None and platform is None and integration_method is None:
+        raise HTTPException(422, "Provide an enabled state, platform, or integration method.")
     if enabled is not None:
         if enabled and site.collector_revoked_at:
             raise HTTPException(409, "The collector key was revoked. Generate a replacement key before reconnecting.")
         site.enabled = enabled
-    if platform is not None:
-        site.platform = platform
+    next_platform = platform or site.platform
+    next_method = integration_method or (_default_method(next_platform) if platform else site.integration_method)
+    if next_method not in PLATFORM_METHODS[next_platform]:
+        raise HTTPException(422, "Choose an integration method supported by the selected platform.")
+    site.platform = next_platform
+    site.integration_method = next_method
+    if site.collector_last_seen_at is None and site.collector_status in {"UNKNOWN", "NOT_CONFIGURED"}:
+        site.collector_status = "WAITING_FOR_EVENTS"
     db.commit()
     if enabled is False:
         for socket in tuple(_clients.get(site_id, set())):
@@ -262,6 +348,10 @@ def rotate_website_token(site_id: int, user: User = Depends(get_current_user), d
     site.token_hash = hashlib.sha256(token.encode()).hexdigest()
     site.collector_revoked_at = None
     site.enabled = True
+    site.collector_status = "NOT_CONFIGURED"
+    site.collector_last_seen_at = None
+    site.collector_last_error = ""
+    site.collector_last_error_at = None
     db.commit()
     db.refresh(site)
     return _site_json(site, token=token)
@@ -383,7 +473,7 @@ def _event_json(event: WebsiteTrafficEvent) -> dict:
     received_at = event.created_at.isoformat()
     detection = event.event_data or {}
     return {
-        "id": event.id, "path": event.request_path, "method": event.method, "status_code": event.status_code,
+        "id": event.id, "event_id": event.event_id, "path": event.request_path, "method": event.method, "status_code": event.status_code,
         "duration_ms": event.duration_ms, "response_bytes": event.response_bytes, "source_ip": event.source_ip,
         "user_agent": event.user_agent, "severity": event.severity, "reason": event.reason,
         "request_timestamp": event.request_timestamp.isoformat() if event.request_timestamp else received_at,
@@ -462,14 +552,20 @@ async def ingest_website_event(
     if not site or not site.enabled or not supplied or not hmac.compare_digest(
         hashlib.sha256(supplied.encode()).hexdigest(), site.token_hash
     ):
-        raise HTTPException(401, "Invalid website ingestion credential.")
-    if not _allow_ingest(site.id):
-        raise HTTPException(429, "Website telemetry ingestion rate limit exceeded.")
+        raise HTTPException(401, detail={"code": "TOKEN_INVALID", "message": "Collector token is invalid, revoked, or does not belong to this website."})
     path = item.path.split("?", 1)[0].split("#", 1)[0]
     path = path if path.startswith("/") and not path.startswith("//") else "/"
     method = item.method.upper()
     if not re.fullmatch(r"[A-Z]{1,12}", method):
         raise HTTPException(422, "Invalid HTTP method.")
+    if item.event_id:
+        existing = db.query(WebsiteTrafficEvent).filter_by(site_id=site.id, event_id=item.event_id).first()
+        if existing:
+            result = _event_json(existing)
+            result["type"] = "traffic_event"
+            return {"accepted": True, "duplicate": True, "event": result, "alerts": []}
+    if not _allow_ingest(site.id):
+        raise HTTPException(429, "Website telemetry ingestion rate limit exceeded.")
     try:
         detection = analyze_website_event(db, site.id, item)
     except Exception:
@@ -494,7 +590,7 @@ async def ingest_website_event(
         "supporting_signals": detection.get("supporting_signals", []),
     })
     event = WebsiteTrafficEvent(
-        site_id=site.id, request_path=path, method=method, status_code=item.status_code,
+        site_id=site.id, event_id=item.event_id, request_path=path, method=method, status_code=item.status_code,
         duration_ms=item.duration_ms, response_bytes=item.response_bytes, source_ip=item.source_ip,
         user_agent=item.user_agent[:256], severity=severity, reason=reason, event_data=event_data,
         request_timestamp=item.request_timestamp,
@@ -511,13 +607,68 @@ async def ingest_website_event(
             alerts.append(_create_or_update_alert(db, site.id, event, detection, detection_reason))
     event_data["alert_ids"] = [alert.id for alert in alerts]
     event.event_data = event_data
-    db.commit()
+    site.collector_status = "RUNNING"
+    site.collector_last_seen_at = datetime.now(timezone.utc)
+    site.collector_last_error = ""
+    site.collector_last_error_at = None
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if item.event_id:
+            existing = db.query(WebsiteTrafficEvent).filter_by(site_id=site.id, event_id=item.event_id).first()
+            if existing:
+                result = _event_json(existing)
+                result["type"] = "traffic_event"
+                return {"accepted": True, "duplicate": True, "event": result, "alerts": []}
+        raise
     db.refresh(event)
     result = _event_json(event)
     result["type"] = "traffic_event"
     result["alerts"] = [_alert_json(alert) for alert in alerts]
     await _publish(site.id, result)
     return {"accepted": True, "event": result}
+
+
+def _allow_health(site_id: int) -> bool:
+    now = time.monotonic()
+    with _ingest_lock:
+        recent = _health_times[site_id]
+        while recent and recent[0] <= now - 60:
+            recent.popleft()
+        if len(recent) >= 120:
+            return False
+        recent.append(now)
+    return True
+
+
+@ingest_router.post("/{site_id}/health", status_code=202)
+def report_collector_health(
+    site_id: int,
+    item: CollectorHealthInput,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Accept an authenticated process heartbeat; it never creates traffic events."""
+    supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    site = db.query(MonitoredWebsite).filter_by(id=site_id).first()
+    if not site or not site.enabled or site.collector_revoked_at or not supplied or not hmac.compare_digest(
+        hashlib.sha256(supplied.encode()).hexdigest(), site.token_hash
+    ):
+        raise HTTPException(401, "Invalid website ingestion credential.")
+    if not _allow_health(site.id):
+        raise HTTPException(429, "Collector health update rate limit exceeded.")
+    now = datetime.now(timezone.utc)
+    site.collector_status = item.status
+    site.collector_last_seen_at = now
+    if item.status == "ERROR":
+        site.collector_last_error = item.error.strip()[:1000] or "Collector reported an unspecified error."
+        site.collector_last_error_at = now
+    elif item.status == "RUNNING":
+        site.collector_last_error = ""
+        site.collector_last_error_at = None
+    db.commit()
+    return {"accepted": True, "status": site.collector_status, "last_seen_at": now.isoformat()}
 
 
 def _alert_json(alert: WebsiteSecurityAlert, site_name: str | None = None) -> dict:

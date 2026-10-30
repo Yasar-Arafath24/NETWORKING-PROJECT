@@ -142,26 +142,33 @@ folder, such as `samples/netsentry_sample.pcap`; paths prefixed with
 Npcap and appropriate capture permissions. PCAP replay does not require Npcap.
 
 Existing Supabase databases should apply migrations `002_website_request_timestamp.sql`,
-`003_google_auth.sql`, `004_live_monitor_ownership.sql`, and
-`005_email_verification.sql`, `006_website_platform.sql`, and
-`007_website_security_alerts.sql`, and `008_website_collector_revocation.sql` if they have not been applied already. Local
-SQLite startup applies the additive columns and creates new tables automatically.
+`003_google_auth.sql`, `004_live_monitor_ownership.sql`,
+`005_email_verification.sql`, `006_website_platform.sql`,
+`007_website_security_alerts.sql`, `008_website_collector_revocation.sql`,
+`009_website_integration_onboarding.sql`, and
+`010_website_event_idempotency.sql` if they have not been applied already. Local
+SQLite startup applies the additive columns and indexes automatically.
 
 The **Website Integrations** page reuses website registration, token rotation,
 event history, and alert APIs. `GET /api/v1/websites` returns per-owner event
 counts, anomaly counts, last successful event time, and an activity status.
-Status is based on actual ingestion timestamps (`WAITING_FOR_EVENTS` before the
-first event, `RECEIVING` for very recent ingestion, `CONNECTED` while within
-`NETSENTRY_WEBSITE_CONNECTED_SECONDS`, `IDLE` after that window, `DISCONNECTED`
-when intake is paused, or `REVOKED` after the collector credential is revoked).
-The status and Test Connection endpoints query accepted database events; they
-do not synthesize heartbeats. A collector process is not directly observable
-until it sends a valid event. New registrations can select a
-platform; this is stored on the existing website record. Duplicate normalized
+Connection state distinguishes `NOT_CONFIGURED`, `WAITING_FOR_EVENTS`,
+`CONNECTED`, `RECEIVING`, `DISCONNECTED`, `ERROR`, and `REVOKED`. A collector
+sends authenticated process heartbeats to
+`POST /api/v1/website-ingest/{site_id}/health`; this reports only the actual
+collector process state and never creates a traffic event. `GET
+/api/v1/websites/{site_id}/status` and `POST
+/api/v1/websites/{site_id}/test-connection` query accepted database events, so
+they verify traffic only after an authenticated event has been stored. Invalid
+credentials receive HTTP 401 with code `TOKEN_INVALID`; the collector prints a
+specific `TOKEN_INVALID` troubleshooting message because an invalid key cannot
+authenticate its own status report. Event and health requests remain scoped to
+the site token; dashboard endpoints remain owner-scoped. Duplicate normalized
 website URLs for one owner return HTTP 409. Registration and token rotation
 share a per-user limit of five token-generating operations per minute. The
-one-time raw token remains available only in the successful registration or
-rotation response.
+one-time raw token is returned only by successful registration or rotation and
+is never included in later list/status responses. Replayed log records use
+stable per-file event IDs and are deduplicated per website.
 
 `frontend/.env.example` separates the dashboard API proxy from the collector's
 reachable backend URL. For local development, collectors on the same computer
@@ -237,3 +244,48 @@ python network/test_flow_engine.py
 
 `venv/`, `__pycache__/`, `*.joblib`, `models/`, and `datasets/processed/*`
 are build artifacts. They are ignored by `.gitignore` and must not be tracked.
+
+### Local website collector end-to-end test (PowerShell)
+
+The test spins up an isolated local website and FastAPI instance, sends an actual
+HTTP request, tails its JSONL access log with the collector, and checks stored
+events, anomaly alerts, duplicate replay, bad/revoked credentials, and user
+isolation. It does not use the running app database or fabricate traffic:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/test_website_collector_e2e.py
+```
+
+To manually test against the local development website, start these in separate
+PowerShell windows from the repository root. The test site binds only to loopback
+and writes metadata for requests you make to `datasets/dev-website-access.jsonl`.
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --port 8000 --env-file .env
+```
+
+```powershell
+.\.venv\Scripts\python.exe scripts/dev_website_log_server.py --host 127.0.0.1 --port 9000 --log-file datasets/dev-website-access.jsonl
+```
+
+```powershell
+Set-Location frontend
+npm run dev
+```
+
+In Website Integrations, register `http://127.0.0.1:9000`, select **Custom** and
+**Generic JSONL**, and copy its one-time token. In a fourth PowerShell window
+from the repository root, set the token from that setup screen and run:
+
+```powershell
+$env:NETSENTRY_INGEST_TOKEN = '<paste-one-time-token-here>'
+$env:NETSENTRY_API_URL = 'http://127.0.0.1:8000'
+.\.venv\Scripts\python.exe scripts/generic_traffic_collector.py --site-id <website-id> --api-url $env:NETSENTRY_API_URL --log-file "$PWD\datasets\dev-website-access.jsonl" --format jsonl
+```
+
+Generate actual requests after the collector starts. `/` returns 200; `/.env`
+returns 403 and should be classified by the heuristic detector; `/missing`
+returns 404. Then use **Test Connection** or **Refresh Status** in the wizard and
+open Website Traffic. Remote collectors must use a reachable public HTTPS API
+origin; the local `127.0.0.1` address is only for processes on the same computer.
+

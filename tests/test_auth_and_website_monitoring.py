@@ -29,10 +29,13 @@ def _client_with_account(email=None):
 
 def test_website_collector_connection_state_uses_ingestion_age_and_revocation():
     now = datetime.now(timezone.utc)
-    assert website_routes._connection_state(True, None, now) == "WAITING_FOR_EVENTS"
+    assert website_routes._connection_state(True, None, now) == "NOT_CONFIGURED"
     assert website_routes._connection_state(True, now - timedelta(seconds=2), now) == "RECEIVING"
     assert website_routes._connection_state(True, now - timedelta(minutes=1), now) == "CONNECTED"
-    assert website_routes._connection_state(True, now - timedelta(minutes=5), now) == "IDLE"
+    assert website_routes._connection_state(True, now - timedelta(minutes=5), now) == "DISCONNECTED"
+    assert website_routes._connection_state(True, None, now, collector_status="RUNNING", collector_last_seen=now) == "CONNECTED"
+    assert website_routes._connection_state(True, None, now, collector_status="ERROR", collector_last_seen=now) == "ERROR"
+    assert website_routes._connection_state(True, now - timedelta(seconds=2), now, collector_status="STOPPED", collector_last_seen=now) == "DISCONNECTED"
     assert website_routes._connection_state(False, now, now) == "DISCONNECTED"
     assert website_routes._connection_state(False, now, now, revoked_at=now) == "REVOKED"
 
@@ -51,6 +54,9 @@ def test_registration_rejects_non_gmail_and_normalizes_gmail():
 
 
 def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
+    website_routes._rotation_times.clear()
+    website_routes._ingest_times.clear()
+    website_routes._health_times.clear()
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -78,11 +84,11 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         })
         assert duplicate.status_code == 409
         waiting = owner.get("/api/v1/websites").json()["websites"][0]
-        assert waiting["integration_status"] == "WAITING_FOR_EVENTS"
+        assert waiting["integration_status"] == "NOT_CONFIGURED"
         assert waiting["total_events"] == 0
         initial_connection = owner.get(f"/api/v1/websites/{website['id']}/status")
         assert initial_connection.status_code == 200
-        assert initial_connection.json()["status"] == "WAITING_FOR_EVENTS"
+        assert initial_connection.json()["status"] == "NOT_CONFIGURED"
         assert initial_connection.json()["verified"] is False
         empty_test = owner.post(f"/api/v1/websites/{website['id']}/test-connection")
         assert empty_test.status_code == 200
@@ -96,12 +102,31 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         platform_update = owner.patch(f"/api/v1/websites/{website['id']}?platform=nodejs")
         assert platform_update.status_code == 200
         assert platform_update.json()["platform"] == "nodejs"
+        assert platform_update.json()["integration_method"] == "nodejs_jsonl"
+        bad_method = owner.patch(f"/api/v1/websites/{website['id']}?platform=nginx&integration_method=fastapi_jsonl")
+        assert bad_method.status_code == 422
         assert other.patch(f"/api/v1/websites/{website['id']}?platform=python").status_code == 404
         original_token = website["ingest_token"]
         rotated = owner.post(f"/api/v1/websites/{website['id']}/rotate-token")
         assert rotated.status_code == 200, rotated.text
         website = rotated.json()
         assert website["ingest_token"] != original_token
+        health_url = f"/api/v1/website-ingest/{website['id']}/health"
+        unauthenticated_health = owner.post(health_url, json={"status": "RUNNING"})
+        assert unauthenticated_health.status_code == 401
+        running_health = owner.post(health_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={"status": "RUNNING"})
+        assert running_health.status_code == 202
+        assert running_health.json()["status"] == "RUNNING"
+        connected_without_events = owner.get(f"/api/v1/websites/{website['id']}/status").json()
+        assert connected_without_events["status"] == "CONNECTED"
+        assert connected_without_events["verified"] is False
+        error_health = owner.post(health_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={"status": "ERROR", "error": "Log path denied"})
+        assert error_health.status_code == 202
+        error_status = owner.get(f"/api/v1/websites/{website['id']}/status").json()
+        assert error_status["status"] == "ERROR"
+        assert error_status["latest_ingestion_error"] == "Log path denied"
+        cleared_health = owner.post(health_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={"status": "RUNNING"})
+        assert cleared_health.status_code == 202
         forbidden_rotation = other.post(f"/api/v1/websites/{website['id']}/rotate-token")
         assert forbidden_rotation.status_code == 404
         event_url = f"/api/v1/website-ingest/{website['id']}/events"
@@ -113,9 +138,16 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         for status, path in ((404, "/missing"), (500, "/server-error")):
             response = owner.post(event_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={
                 "method": "GET", "path": path, "status_code": status,
+                "event_id": f"fixture-{path.lstrip('/').replace('/', '-')}",
                 "request_timestamp": "2026-10-29T10:00:00Z",
             })
             assert response.status_code == 202, response.text
+        duplicate_event = owner.post(event_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={
+            "method": "GET", "path": "/missing", "status_code": 404,
+            "event_id": "fixture-missing",
+        })
+        assert duplicate_event.status_code == 202
+        assert duplicate_event.json()["duplicate"] is True
 
         limited = owner.post(event_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={
             "method": "GET", "path": "/third-request", "status_code": 200,

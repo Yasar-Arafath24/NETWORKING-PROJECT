@@ -77,11 +77,33 @@ if "collector_revoked_at" not in website_columns:
     timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
     with engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE monitored_websites ADD COLUMN collector_revoked_at {timestamp_type} NULL"))
+website_columns = {column["name"] for column in inspect(engine).get_columns("monitored_websites")}
+if "integration_method" not in website_columns:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE monitored_websites ADD COLUMN integration_method VARCHAR(32) NOT NULL DEFAULT 'generic_jsonl'"))
+for column_name, column_type, default_sql in (
+    ("collector_status", "VARCHAR(16)", "'UNKNOWN'"),
+    ("collector_last_seen_at", "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP", None),
+    ("collector_last_error", "VARCHAR(1000)", "''"),
+    ("collector_last_error_at", "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP", None),
+):
+    if column_name not in website_columns:
+        default_clause = f" NOT NULL DEFAULT {default_sql}" if default_sql is not None else " NULL"
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE monitored_websites ADD COLUMN {column_name} {column_type}{default_clause}"))
 event_columns = {column["name"] for column in inspect(engine).get_columns("website_traffic_events")}
 if "request_timestamp" not in event_columns:
     timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
     with engine.begin() as connection:
         connection.execute(text(f"ALTER TABLE website_traffic_events ADD COLUMN request_timestamp {timestamp_type} NULL"))
+if "event_id" not in event_columns:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE website_traffic_events ADD COLUMN event_id VARCHAR(128) NULL"))
+with engine.begin() as connection:
+    connection.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_website_events_site_event_id "
+        "ON website_traffic_events (site_id, event_id)"
+    ))
 
 app = FastAPI(
     title="NetSentry AI",

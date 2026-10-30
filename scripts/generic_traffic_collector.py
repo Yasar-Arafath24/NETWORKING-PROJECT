@@ -2,6 +2,7 @@
 """Collect web-server access records and ingest normalized events into NetSentry."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -89,6 +90,9 @@ def normalize_event(data, parser=None, default_status=200):
         "source_ip": str(data.get("source_ip", data.get("client_ip", data.get("remote_addr", ""))))[:64],
         "user_agent": str(data.get("user_agent", data.get("userAgent", data.get("http_user_agent", ""))))[:256],
     }
+    event_id = data.get("event_id")
+    if event_id:
+        event["event_id"] = str(event_id)[:128]
     timestamp = data.get("request_timestamp", data.get("timestamp", data.get("time")))
     if timestamp:
         if isinstance(timestamp, datetime):
@@ -201,13 +205,31 @@ def send_event(api_url, site_id, token, event, timeout, retries):
                 return True
         except HTTPError as exc:
             if exc.code in (401, 404):
-                raise RuntimeError(f"Ingestion rejected with HTTP {exc.code}: check the site ID and token") from exc
+                raise RuntimeError(f"TOKEN_INVALID: ingestion rejected with HTTP {exc.code}; check that the active token belongs to site {site_id}") from exc
             print(f"Failed to send {event['path']}: HTTP {exc.code}", file=sys.stderr)
         except (URLError, TimeoutError, RuntimeError) as exc:
             print(f"Failed to send {event['path']}: {exc}", file=sys.stderr)
         if attempt < retries:
             time.sleep(min(2 ** attempt, 10))
     return False
+
+
+def send_collector_health(api_url, site_id, token, status, timeout=5, error=""):
+    """Report real collector process state without creating a traffic event."""
+    endpoint = f"{api_url.rstrip('/')}/api/v1/website-ingest/{site_id}/health"
+    body = json.dumps({"status": status, "error": error[:1000]}).encode("utf-8")
+    request = Request(endpoint, data=body, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "NetSentry-Generic-Collector/1.0",
+    }, method="POST")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.status < 300
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise RuntimeError("TOKEN_INVALID: collector credential is invalid, revoked, or belongs to another website") from exc
+        raise
 
 
 def process_line(line, parser):
@@ -217,15 +239,24 @@ def process_line(line, parser):
     return None
 
 
-def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_interval, from_beginning):
+def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_interval, from_beginning, heartbeat_interval=15):
     log_path = Path(path)
     if not log_path.is_file():
         raise FileNotFoundError(f"Log file not found: {log_path}")
 
     position = 0 if from_beginning else log_path.stat().st_size
     print(f"Watching {log_path} with the {parser} parser and sending events to site {site_id}", flush=True)
+    last_heartbeat = 0.0
+    send_collector_health(api_url, site_id, token, "RUNNING", timeout=timeout)
 
     while running:
+        now = time.monotonic()
+        if now - last_heartbeat >= heartbeat_interval:
+            try:
+                send_collector_health(api_url, site_id, token, "RUNNING", timeout=timeout)
+            except (HTTPError, URLError, TimeoutError) as exc:
+                print(f"Collector heartbeat failed: {exc}", file=sys.stderr)
+            last_heartbeat = now
         try:
             size = log_path.stat().st_size
             if size < position:
@@ -233,16 +264,33 @@ def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_inte
 
             with log_path.open("r", encoding="utf-8", errors="replace") as log:
                 log.seek(position)
-                for line in log:
+                while running:
+                    line_offset = log.tell()
+                    line = log.readline()
+                    if not line:
+                        break
                     if not running:
                         break
                     event = process_line(line, parser)
                     if event:
-                        send_event(api_url, site_id, token, event, timeout, retries)
+                        file_stat = log_path.stat()
+                        identity = f"{log_path.resolve()}:{file_stat.st_dev}:{file_stat.st_ino}:{line_offset}:{line.rstrip()}"
+                        event.setdefault("event_id", hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest())
+                        if not send_event(api_url, site_id, token, event, timeout, retries):
+                            try:
+                                send_collector_health(api_url, site_id, token, "ERROR", timeout=timeout,
+                                                      error="One or more traffic events could not be delivered. Check API reachability.")
+                            except Exception as exc:
+                                print(f"Unable to report collector delivery error: {exc}", file=sys.stderr)
                 position = log.tell()
         except FileNotFoundError:
             pass
         time.sleep(poll_interval)
+
+    try:
+        send_collector_health(api_url, site_id, token, "STOPPED", timeout=timeout)
+    except Exception as exc:
+        print(f"Unable to report collector stop: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -267,7 +315,11 @@ if __name__ == "__main__":
     try:
         tail_file(args.log_file, args.api_url, args.site_id, args.token, args.format, args.timeout, args.retries, args.poll_interval, args.from_beginning)
     except KeyboardInterrupt:
-        pass
+        stop_collector(None, None)
     except Exception as exc:
         print(f"Collector stopped: {exc}", file=sys.stderr)
+        try:
+            send_collector_health(args.api_url, args.site_id, args.token, "ERROR", timeout=args.timeout, error=str(exc))
+        except Exception as health_exc:
+            print(f"Unable to report collector error: {health_exc}", file=sys.stderr)
         raise SystemExit(1)

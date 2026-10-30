@@ -1,3 +1,6 @@
+import json
+
+from scripts import generic_traffic_collector
 from scripts.generic_traffic_collector import normalize_event, parse_apache_line, parse_iis_line
 
 
@@ -34,3 +37,29 @@ def test_iis_collector_parses_w3c_fields_and_duration():
     assert event["path"] == "/account"
     assert event["status_code"] == 401
     assert event["duration_ms"] == 125
+
+
+def test_collector_health_reports_only_process_state(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["payload"] = json.loads(request.data)
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(generic_traffic_collector, "urlopen", fake_urlopen)
+    assert generic_traffic_collector.send_collector_health("https://api.example", 42, "private-key", "ERROR", error="log denied")
+    assert captured["url"] == "https://api.example/api/v1/website-ingest/42/health"
+    assert captured["authorization"] == "Bearer private-key"
+    assert captured["payload"] == {"status": "ERROR", "error": "log denied"}
