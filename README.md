@@ -106,6 +106,14 @@ all current website findings are marked HEURISTIC. No website ML score is
 claimed. A separately trained and validated website-event model would be
 required before adding that classification.
 
+NetSentry persists users, email verification, sessions, PCAP analysis reports,
+network flow records, alerts, monitored websites, website traffic events, and
+website alert changes through the backend database connection. Supabase
+deployments must configure one backend database URL (`NETSENTRY_DATABASE_URL`,
+`SUPABASE_DATABASE_URL`, or `SUPABASE_DB_URL`) and apply the SQL migrations in
+`supabase/migrations/` before starting the API. The backend never falls back to
+ephemeral in-memory storage for deployed reports.
+
 For an Nginx JSON-lines access log, configure a format with fields such as
 path, method, status_code, duration_ms, response_bytes, source_ip, and
 user_agent. Then run scripts/netsentry_json_log_agent.py on that authorized

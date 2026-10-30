@@ -19,6 +19,12 @@ from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
 from backend.app.models.user import EmailVerification, User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
 
+if engine.dialect.name == "sqlite" and os.getenv("NETSENTRY_ENV", "").lower() == "production":
+    raise RuntimeError(
+        "Production requires NETSENTRY_DATABASE_URL, SUPABASE_DATABASE_URL, "
+        "or SUPABASE_DB_URL to point to Supabase/PostgreSQL."
+    )
+
 Base.metadata.create_all(bind=engine)
 with engine.begin() as connection:
     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_website_events_site_created ON website_traffic_events (site_id, created_at)"))

@@ -39,7 +39,6 @@ import {
 import BackendStatus from "./BackendStatus";
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
-import RealtimeTrafficMonitor from "./RealtimeTrafficMonitor";
 import WebsiteMonitoring from "./WebsiteMonitoring";
 import WebsiteAnomalyAnalytics from "./WebsiteAnomalyAnalytics";
 import WebsiteIntegrations from "./WebsiteIntegrations";
@@ -60,7 +59,6 @@ const navigation = [
   { label: "PCAP Analysis", icon: FileSearch },
   { label: "Traffic Monitoring", icon: Activity },
   { label: "Website Integrations", icon: Globe2 },
-  { label: "Real-Time Monitoring", icon: Wifi },
   { label: "Website Traffic", icon: Globe2 },
   { label: "AI Detection", icon: ShieldAlert },
   { label: "Security Alerts", icon: Bell },
@@ -1041,20 +1039,6 @@ export default function Dashboard({ user = null, onSignOut }) {
     );
   }
 
-  function renderRealtimeMonitoring() {
-    return (
-      <>
-        <PageHeading
-          eyebrow="LIVE NETWORK OPERATIONS"
-          title="Real-Time Monitoring"
-          description="Capture current packets from an available interface or replay a local PCAP. Live counters and detections update only from observed traffic."
-          action={primaryAction}
-        />
-        <RealtimeTrafficMonitor />
-      </>
-    );
-  }
-
   function renderWebsiteTraffic() {
     return (
       <>
@@ -1543,9 +1527,6 @@ export default function Dashboard({ user = null, onSignOut }) {
 
       case "Website Integrations":
         return <WebsiteIntegrations />;
-
-      case "Real-Time Monitoring":
-        return renderRealtimeMonitoring();
 
       case "Website Traffic":
         return renderWebsiteTraffic();

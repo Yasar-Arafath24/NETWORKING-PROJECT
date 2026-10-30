@@ -174,9 +174,6 @@
 .website-pagination button:disabled { opacity: .45; cursor: not-allowed; }
 .website-status.status-neutral { color: #475569; background: #f1f5f9; }
 .website-status-note { padding: 12px 14px; border: 1px solid #bfdbfe; border-radius: 8px; color: #1e40af; background: #eff6ff; font-size: 11px; line-height: 1.5; }
-.realtime-capture-section { display: grid; gap: 12px; margin-top: 26px; }
-.realtime-capture-section > h2 { margin: 0; color: #0f172a; font-size: 18px; }
-.realtime-capture-section > p { margin: 0; color: #64748b; font-size: 12px; }
 .website-event-table table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 11px; }
 .website-event-table th { padding: 10px 9px; color: #64748b; background: #f8fafc; text-align: left; font-weight: 600; }
 .website-event-table td { padding: 10px 9px; border-top: 1px solid #eef2f7; color: #334155; }

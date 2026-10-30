@@ -9,12 +9,12 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATABASE_PATH = PROJECT_ROOT / "netsentry.db"
 
-DATABASE_URL = os.getenv(
-    "NETSENTRY_DATABASE_URL",
-    os.getenv(
-        "DATABASE_URL",
-        f"sqlite:///{DATABASE_PATH.as_posix()}",
-    ),
+DATABASE_URL = (
+    os.getenv("NETSENTRY_DATABASE_URL")
+    or os.getenv("SUPABASE_DATABASE_URL")
+    or os.getenv("SUPABASE_DB_URL")
+    or os.getenv("DATABASE_URL")
+    or f"sqlite:///{DATABASE_PATH.as_posix()}"
 )
 
 # Normalize scheme for psycopg2
