@@ -6,6 +6,17 @@ from dotenv import load_dotenv
 # Load the project's local environment file regardless of the shell's cwd.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+# Make local development usable without SMTP credentials. Production still
+# requires explicit verification configuration, so verification secrets and
+# delivery methods are never silently weakened outside development.
+if not os.getenv("NETSENTRY_ENV", "").strip():
+    os.environ["NETSENTRY_ENV"] = "development"
+if os.getenv("NETSENTRY_ENV", "").strip().lower() == "development":
+    os.environ.setdefault(
+        "NETSENTRY_OTP_SECRET",
+        "netsentry-local-development-verification-secret-at-least-32-characters",
+    )
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.history_routes import router as history_router
