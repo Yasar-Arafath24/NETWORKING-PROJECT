@@ -108,8 +108,10 @@ export async function setWebsiteEnabled(id, enabled) {
   return request(API_BASE_URL + "/api/v1/websites/" + id + "?enabled=" + enabled, { method: "PATCH" });
 }
 
-export async function updateWebsitePlatform(id, platform) {
-  return request(API_BASE_URL + "/api/v1/websites/" + id + "?platform=" + encodeURIComponent(platform), { method: "PATCH" });
+export async function updateWebsitePlatform(id, platform, integrationMethod) {
+  const params = new URLSearchParams({ platform });
+  if (integrationMethod) params.set("integration_method", integrationMethod);
+  return request(API_BASE_URL + "/api/v1/websites/" + id + "?" + params.toString(), { method: "PATCH" });
 }
 
 export async function rotateWebsiteToken(id) {

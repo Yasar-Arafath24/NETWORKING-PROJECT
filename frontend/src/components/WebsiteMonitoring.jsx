@@ -5,7 +5,7 @@ import { COLLECTOR_API_URL, addWebsite, deleteWebsite, getWebsiteEvents, getWebs
 const PAGE_SIZE = 50;
 function timeLabel(value) { return value ? new Date(value).toLocaleString() : "—"; }
 
-export default function WebsiteMonitoring({ embedded = false }) {
+export default function WebsiteMonitoring({ embedded = false, initialSiteId = null }) {
   const [websites, setWebsites] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [events, setEvents] = useState([]);
@@ -30,9 +30,9 @@ export default function WebsiteMonitoring({ embedded = false }) {
       const result = await getWebsites();
       setWebsites(result.websites || []);
       setError("");
-      setSelectedId((current) => current && result.websites?.some((site) => site.id === current) ? current : result.websites?.[0]?.id ?? null);
+      setSelectedId((current) => initialSiteId && result.websites?.some((site) => site.id === initialSiteId) ? initialSiteId : (current && result.websites?.some((site) => site.id === current) ? current : result.websites?.[0]?.id ?? null));
     } catch (err) { setError(err.message); }
-  }, []);
+  }, [initialSiteId]);
   const loadEvents = useCallback(async (siteId, options = query) => {
     if (!siteId) { setEvents([]); setTotal(0); setMetrics({ total_requests: 0, requests_per_minute: 0, response_bytes: 0, heuristic_flags: 0, status_distribution: {} }); return; }
     try {
@@ -44,7 +44,11 @@ export default function WebsiteMonitoring({ embedded = false }) {
     } catch (err) { setError(err.message); }
   }, [query]);
 
-  useEffect(() => { const timer = window.setTimeout(loadSites, 0); return () => window.clearTimeout(timer); }, [loadSites]);
+  useEffect(() => {
+    const initial = window.setTimeout(loadSites, 0);
+    const timer = window.setInterval(loadSites, 2000);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [loadSites]);
   useEffect(() => { const timer = window.setTimeout(() => loadEvents(selected?.id), 0); return () => window.clearTimeout(timer); }, [selected?.id, loadEvents]);
   useEffect(() => {
     if (!selected?.enabled) return undefined;
@@ -82,6 +86,7 @@ export default function WebsiteMonitoring({ embedded = false }) {
   }, [clock, events]);
   const receivingRecently = Number(metrics.requests_per_minute || 0) > 0;
   const hasReceivedEvents = Number(metrics.total_requests || 0) > 0;
+  const collectorState = selected?.collector_revoked ? "REVOKED" : !selected?.enabled ? "DISCONNECTED" : (selected?.integration_status || (receivingRecently ? "RECEIVING" : hasReceivedEvents ? "DISCONNECTED" : "NOT_CONFIGURED"));
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   async function submit(event) {
@@ -130,7 +135,7 @@ export default function WebsiteMonitoring({ embedded = false }) {
           {error && <div className="website-error" role="alert">{error}</div>}
           {newSite && <section className="website-token-card"><div><KeyRound size={19} /><strong>{newSite.rotated ? "New collector key — replace the old one" : "Save this ingestion key now"}</strong></div><p>It is shown only once. Keep it as a server-side secret; never put it in public browser JavaScript. {newSite.rotated ? "The previous key has been revoked, so update the collector before it can send more events." : "Install it in the collector running on your website server."}</p><code>{newSite.token}</code><p>Set <code>NETSENTRY_INGEST_TOKEN</code> in the collector server environment, then start the JSONL collector with the command below. The startup command does not contain the secret.</p><code>{`python scripts/generic_traffic_collector.py --site-id ${newSite.id} --api-url ${COLLECTOR_API_URL} --log-file "C:/logs/access.jsonl" --format jsonl`}</code><p>Each log line can be JSON containing <code>status_code</code>, plus optional path, method, duration_ms, response_bytes, source_ip, and user_agent.</p><button className="secondary-button" onClick={() => setNewSite(null)}>I saved the key</button></section>}
           {selected ? <>
-            <section className="website-metrics"><article><span><Activity size={17} /> Requests / minute</span><strong>{metrics.requests_per_minute || 0}</strong></article><article><span><AlertTriangle size={17} /> Heuristic findings</span><strong>{metrics.heuristic_flags || 0}</strong></article><article><span><Radio size={17} /> Collector activity</span><strong className={receivingRecently ? "stream-live" : ""}>{selected.collector_revoked ? "REVOKED" : !selected.enabled ? "PAUSED" : receivingRecently ? "RECEIVING" : hasReceivedEvents ? "IDLE" : "WAITING_FOR_EVENTS"}</strong></article><article><span><Activity size={17} /> Response data</span><strong>{Number(metrics.response_bytes || 0).toLocaleString()} B</strong></article></section>
+            <section className="website-metrics"><article><span><Activity size={17} /> Requests / minute</span><strong>{metrics.requests_per_minute || 0}</strong></article><article><span><AlertTriangle size={17} /> Heuristic findings</span><strong>{metrics.heuristic_flags || 0}</strong></article><article><span><Radio size={17} /> Collector activity</span><strong className={collectorState === "RECEIVING" ? "stream-live" : ""}>{collectorState}</strong></article><article><span><Activity size={17} /> Response data</span><strong>{Number(metrics.response_bytes || 0).toLocaleString()} B</strong></article></section>
             <section className="panel website-chart"><div><h2>Recent request trend</h2><p>Events per minute · last 10 minutes from the current event window</p></div><div className="website-bars" role="img" aria-label="Recent requests per minute bar chart">{trafficBars.map((count, index) => <span key={index} title={(9 - index) + " minutes ago: " + count + " requests"} style={{ height: Math.max(5, count / Math.max(1, ...trafficBars) * 100) + "%" }} />)}</div></section>
             <section className="website-status-distribution"><strong>HTTP status distribution</strong>{Object.entries(metrics.status_distribution || {}).map(([range, count]) => <span key={range}>{range}: <b>{Number(count).toLocaleString()}</b></span>)}</section>
             <section className="panel"><div className="panel-heading"><div><h2>Live request events</h2><p>{selected.name} · {metrics.total_requests || 0} requests in selected period</p></div><button className="secondary-button" onClick={() => loadEvents(selected.id)}><RefreshCw size={14} /> Refresh</button></div>

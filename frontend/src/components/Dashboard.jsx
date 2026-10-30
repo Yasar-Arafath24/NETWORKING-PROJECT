@@ -377,6 +377,7 @@ export default function Dashboard({ user = null, onSignOut }) {
 
   const [backendStatus, setBackendStatus] = useState("Checking");
   const [activePage, setActivePage] = useState("Overview");
+  const [activeWebsiteId, setActiveWebsiteId] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -1044,8 +1045,10 @@ export default function Dashboard({ user = null, onSignOut }) {
           description="Configure authorized website collectors and inspect their live access-log traffic."
           action={primaryAction}
         />
-        <WebsiteIntegrations />
-        <WebsiteMonitoring embedded />
+        <WebsiteIntegrations
+          onOpenLiveMonitoring={(siteId) => setActiveWebsiteId(siteId)}
+        />
+        <WebsiteMonitoring embedded initialSiteId={activeWebsiteId} />
       </>
     );
   }

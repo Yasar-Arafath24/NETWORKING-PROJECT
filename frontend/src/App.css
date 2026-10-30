@@ -308,7 +308,7 @@
 .integration-empty h2, .integration-empty p { margin: 0; }
 .integration-empty p { max-width: 480px; color: #64748b; font-size: 12px; line-height: 1.6; }
 .integration-wizard { display: grid; gap: 16px; padding: 20px; }
-.integration-stepper { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 0; margin: 0; list-style: none; }
+.integration-stepper { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; padding: 0; margin: 0; list-style: none; }
 .integration-stepper li { display: grid; justify-items: center; gap: 7px; color: #94a3b8; text-align: center; }
 .integration-stepper li > span { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #cbd5e1; border-radius: 50%; font-size: 11px; }
 .integration-stepper li small { font-size: 9px; line-height: 1.3; }
@@ -329,6 +329,11 @@
 .integration-token > code, .integration-code-block { display: block; overflow-wrap: anywhere; padding: 11px; border-radius: 7px; color: #e0f2fe; background: #0f172a; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
 .integration-token > .secondary-button { width: fit-content; min-height: 32px; gap: 6px; cursor: pointer; }
 .integration-step-panel { display: grid; gap: 9px; padding: 16px; border: 1px solid #e2e8f0; border-radius: 9px; }
+.integration-platform-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 9px; }
+.integration-platform-card { display: grid; gap: 6px; min-height: 72px; padding: 12px; border: 1px solid #dbe3ee; border-radius: 8px; color: #1e293b; background: #fff; text-align: left; cursor: pointer; }
+.integration-platform-card:hover, .integration-platform-card.selected { border-color: #60a5fa; background: #eff6ff; }
+.integration-platform-card:disabled { opacity: .65; cursor: wait; }
+.integration-platform-card small { color: #64748b; font-size: 10px; line-height: 1.45; }
 .integration-step-panel h3, .integration-details h3 { margin: 0; color: #0f172a; font-size: 13px; }
 .integration-step-panel p { margin: 0; }
 .integration-code-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #475569; font-size: 10px; font-weight: 700; }
