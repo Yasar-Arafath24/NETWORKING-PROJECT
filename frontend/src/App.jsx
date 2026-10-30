@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, Mail, Shield } from "lucide-react";
+import { ArrowLeft, ArrowRight, LoaderCircle, Mail, Shield } from "lucide-react";
 import Dashboard from "./components/Dashboard";
 import { authenticate, authenticateWithGoogle, getCurrentUser, getGoogleSignInConfig, resendSignupCode, signOut, verifySignupEmail } from "./services/api";
 
@@ -164,9 +164,9 @@ function AccountGate({ onAuthenticated }) {
       <form className="account-card" onSubmit={submit}>
         <div className="account-brand"><div className="account-mark"><Shield size={22} /></div><div><strong>NetSentry AI</strong><span>Network intelligence workspace</span></div></div>
         <p className="account-eyebrow">{verificationPending ? "EMAIL CONFIRMATION" : "SECURE WORKSPACE ACCESS"}</p>
-        <h1>{verificationPending ? "Check your inbox" : registering ? "Create your account" : "Welcome back"}</h1>
+        <h1>{verificationPending ? "Verify your email" : registering ? "Create your account" : "Welcome back"}</h1>
         <p className="account-copy">{verificationPending
-          ? `Enter the six-digit code we sent to ${email}. It expires in 10 minutes.`
+          ? `Enter the six-digit code sent to ${email}. It expires in 10 minutes.`
           : registering
             ? "Set up your account to save your network analyses and alerts."
             : "Sign in to continue to your private network analysis workspace."}</p>
@@ -196,20 +196,17 @@ function AccountGate({ onAuthenticated }) {
         {notice && <p className="account-success" role="status">{notice}</p>}
         <button className="account-primary-button" disabled={!canSubmit}>{busy ? <><LoaderCircle size={17} className="account-spin" /> {verificationPending ? "Verifying code…" : "Please wait…"}</> : <>{verificationPending ? "Verify email and continue" : registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></>}</button>
         {verificationPending && <div className="account-verify-actions"><button type="button" className="account-link-button" disabled={isBusy} onClick={resendCode}><Mail size={15} /> Resend code</button><button type="button" className="account-link-button" disabled={isBusy} onClick={() => { setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); }}><ArrowLeft size={15} /> Back to signup</button></div>}
-        {!verificationPending && <><div className="google-divider"><span>OR</span></div>
+        {!verificationPending && <>{googleConfig.client_id && <><div className="google-divider"><span>OR</span></div>
         <div className={googleBusy ? "google-button-slot is-loading" : "google-button-slot"} aria-busy={googleBusy}>
-          {googleConfig.client_id && <div ref={googleButtonRef} className="google-button-target" />}
-          {!googleConfig.client_id && googleConfig.checked && !googleError && <p className="google-config-note">Google sign-in is not configured for this site.</p>}
+          <div ref={googleButtonRef} className="google-button-target" />
           {googleBusy && <span className="google-loading-label" role="status">Verifying Google account…</span>}
-        </div>
-        <p className="google-help">Use a verified Gmail address. Close the Google window to cancel, then try again.</p>
+        </div></>}
         {googleError && <p className="account-error" role="alert">{googleError}</p>}
         <p className="account-switch">{registering ? "Already have an account?" : "New to NetSentry?"}{" "}
           <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
             {registering ? "Sign in" : "Create an account"}
           </button>
         </p></>}
-        <p className="account-security-note"><CheckCircle2 size={14} /> Sign in once and NetSentry will restore your session automatically on this device.</p>
       </form>
     </main>
   );

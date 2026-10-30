@@ -43,8 +43,10 @@ and signs the user in. Codes expire after 10 minutes and are limited to five
 attempts. Configure `NETSENTRY_OTP_SECRET` (at least 32 random characters) and
 the `NETSENTRY_SMTP_*` settings from `.env.example` to deliver verification
 messages. For local testing only, `NETSENTRY_ENV=development` and
-`NETSENTRY_EMAIL_DELIVERY=console` writes the real code to the backend console;
-keep SMTP delivery enabled for actual email and production. For Gmail SMTP, use an app password. Passwords must be at least six
+`NETSENTRY_EMAIL_DELIVERY=console` writes the real code to the backend console.
+Console mode is only suitable for local testing; signup will attempt SMTP by
+default and will report missing SMTP configuration rather than claiming an email
+was sent. Keep SMTP delivery enabled for actual email. For Gmail SMTP, use an app password. Passwords must be at least six
 characters and include uppercase, lowercase, and numeric characters. Accounts
 and server-side sessions are stored in the configured SQLAlchemy database;
 passwords are stored as salted scrypt hashes. The frontend restores a valid
