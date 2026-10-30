@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.api import auth_routes
 from backend.app.main import app
 from backend.app.models.user import User
+from tests.auth_helpers import register_and_verify
 from backend.app.services.database import Base, get_db
 
 
@@ -88,10 +89,10 @@ def test_google_rejects_invalid_token_and_mismatched_nonce(google_client, monkey
 def test_verified_google_identity_links_existing_gmail_account(google_client, monkeypatch):
     client, nonce, session_factory = google_client
     email = f"existing-{uuid4().hex}@gmail.com"
-    registered = client.post("/api/v1/auth/register", json={
+    registered = register_and_verify(client, {
         "name": "Existing User", "email": email, "password": "StrongPassword123",
     })
-    assert registered.status_code == 201
+    assert registered.status_code == 200
     user_id = registered.json()["user"]["id"]
     mock_claims(monkeypatch, nonce, email=email)
     linked = client.post("/api/v1/auth/google", json={"credential": "x" * 120, "nonce": nonce})

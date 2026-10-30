@@ -37,9 +37,18 @@ Then open the interactive docs at <http://127.0.0.1:8000/docs>.
 
 ## Accounts and private analysis history
 
-The frontend supports account registration and sign-in. Accounts and server-side
-sessions are stored in the configured SQLAlchemy database; passwords are stored
-as salted scrypt hashes. New analysis reports are associated with the signed-in
+The frontend supports account registration and sign-in. Password signup sends a
+six-digit email verification code; verifying the code completes account creation
+and signs the user in. Codes expire after 10 minutes and are limited to five
+attempts. Configure `NETSENTRY_OTP_SECRET` (at least 32 random characters) and
+the `NETSENTRY_SMTP_*` settings from `.env.example` to deliver verification
+messages. For local testing only, `NETSENTRY_ENV=development` and
+`NETSENTRY_EMAIL_DELIVERY=console` writes the real code to the backend console;
+keep SMTP delivery enabled for actual email and production. For Gmail SMTP, use an app password. Passwords must be at least six
+characters and include uppercase, lowercase, and numeric characters. Accounts
+and server-side sessions are stored in the configured SQLAlchemy database;
+passwords are stored as salted scrypt hashes. The frontend restores a valid
+HTTP-only session cookie automatically when it opens. New analysis reports are associated with the signed-in
 user, and history/detail/latest-report endpoints only return that user's
 reports. Existing reports from before this change remain unassigned and are
 hidden from account dashboards.
@@ -85,8 +94,8 @@ configured automatically. For deployment, set NETSENTRY_DATABASE_URL,
 NETSENTRY_CORS_ORIGINS to the exact frontend origins, and
 NETSENTRY_COOKIE_SECURE=true behind HTTPS. For separate frontend/API origins, set
 NETSENTRY_COOKIE_SAMESITE=none (HTTPS and NETSENTRY_COOKIE_SECURE=true are required
-for browser SameSite=None cookies). The current account flow does not
-yet include email verification, password reset, or account deletion. Authorized
+for browser SameSite=None cookies). Password reset and account deletion are not
+implemented yet. Authorized
 website records and telemetry are isolated by account. The existing
 process-wide capture worker permits only its owner to view that live session;
 persisted live flow records and alerts are owner-scoped. Legacy records without
@@ -98,7 +107,8 @@ folder, such as `samples/netsentry_sample.pcap`; paths prefixed with
 Npcap and appropriate capture permissions. PCAP replay does not require Npcap.
 
 Existing Supabase databases should apply migrations `002_website_request_timestamp.sql`,
-`003_google_auth.sql`, and `004_live_monitor_ownership.sql` if they have not been
+`003_google_auth.sql`, `004_live_monitor_ownership.sql`, and
+`005_email_verification.sql` if they have not been
 applied already. Local SQLite startup applies the additive columns automatically.
 
 Run the frontend and backend from the repository root in separate PowerShell

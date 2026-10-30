@@ -11,16 +11,17 @@ from backend.app.api import website_routes
 from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
 from backend.app.services.database import Base, get_db
+from tests.auth_helpers import register_and_verify
 
 
 def _client_with_account(email=None):
     client = TestClient(app)
-    result = client.post("/api/v1/auth/register", json={
+    result = register_and_verify(client, {
         "name": "Monitor User",
         "email": email or f"monitor-{uuid4().hex}@gmail.com",
         "password": "SecurePass1234",
     })
-    assert result.status_code == 201, result.text
+    assert result.status_code == 200, result.text
     client.headers.update({"X-CSRF-Token": client.cookies.get("netsentry_csrf")})
     return client
 
@@ -31,10 +32,10 @@ def test_registration_rejects_non_gmail_and_normalizes_gmail():
         "name": "Monitor User", "email": "user@example.org", "password": "SecurePass1234",
     })
     assert invalid.status_code == 422
-    valid = client.post("/api/v1/auth/register", json={
+    valid = register_and_verify(client, {
         "name": "Monitor User", "email": f"  Monitor-{uuid4().hex}@GMAIL.COM  ", "password": "SecurePass1234",
     })
-    assert valid.status_code == 201, valid.text
+    assert valid.status_code == 200, valid.text
     assert valid.json()["user"]["email"].endswith("@gmail.com")
 
 

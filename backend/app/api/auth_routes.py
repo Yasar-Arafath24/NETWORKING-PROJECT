@@ -1,28 +1,44 @@
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
+import smtplib
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.models.user import User, UserSession
+from backend.app.models.user import EmailVerification, User, UserSession
 from backend.app.services.database import get_db
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
 SESSION_COOKIE = "netsentry_session"
 CSRF_COOKIE = "netsentry_csrf"
 SESSION_DAYS = 7
+EMAIL_CODE_MINUTES = 10
+EMAIL_CODE_RESEND_SECONDS = 60
+EMAIL_CODE_MAX_ATTEMPTS = 5
 
 
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=254)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class VerifyEmailRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class ResendVerificationRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
 
 
 class LoginRequest(BaseModel):
@@ -67,6 +83,115 @@ def _password_matches(password: str, stored: str) -> bool:
         return hmac.compare_digest(value.hex(), expected)
     except (ValueError, TypeError):
         return False
+
+
+def _verification_secret() -> bytes:
+    secret = os.getenv("NETSENTRY_OTP_SECRET", "").strip()
+    if len(secret) < 32:
+        raise HTTPException(503, "Email verification is not configured. Set NETSENTRY_OTP_SECRET on the backend.")
+    return secret.encode()
+
+
+def _email_delivery_mode() -> str:
+    mode = os.getenv("NETSENTRY_EMAIL_DELIVERY", "smtp").strip().lower()
+    if mode not in {"smtp", "console"}:
+        raise HTTPException(503, "Email verification delivery must be set to smtp or console.")
+    if mode == "console" and os.getenv("NETSENTRY_ENV", "").strip().lower() != "development":
+        raise HTTPException(503, "Console OTP delivery is only allowed when NETSENTRY_ENV=development.")
+    return mode
+
+
+def _validate_email_delivery_config() -> str:
+    _verification_secret()
+    mode = _email_delivery_mode()
+    if mode == "smtp" and (
+        not os.getenv("NETSENTRY_SMTP_HOST", "").strip()
+        or not os.getenv("NETSENTRY_SMTP_FROM", "").strip()
+    ):
+        raise HTTPException(
+            503,
+            "Email verification cannot send codes: configure NETSENTRY_SMTP_HOST and NETSENTRY_SMTP_FROM, or use NETSENTRY_EMAIL_DELIVERY=console with NETSENTRY_ENV=development for local testing.",
+        )
+    return mode
+
+
+def send_verification_email(email: str, name: str, code: str) -> None:
+    """Deliver a signup code through configured SMTP; never return it to the browser."""
+    if _email_delivery_mode() == "console":
+        logger.warning("Development OTP for %s (%s): %s", email, name, code)
+        return
+
+    host = os.getenv("NETSENTRY_SMTP_HOST", "").strip()
+    sender = os.getenv("NETSENTRY_SMTP_FROM", "").strip()
+    username = os.getenv("NETSENTRY_SMTP_USERNAME", "").strip()
+    password = os.getenv("NETSENTRY_SMTP_PASSWORD", "")
+    if not host or not sender:
+        raise HTTPException(503, "Email verification is not configured. Set NETSENTRY_SMTP_HOST and NETSENTRY_SMTP_FROM on the backend.")
+
+    message = EmailMessage()
+    message["Subject"] = "Your NetSentry verification code"
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(
+        f"Hello {name},\n\nYour NetSentry verification code is {code}. "
+        f"It expires in {EMAIL_CODE_MINUTES} minutes.\n\n"
+        "If you did not create this account, you can ignore this message."
+    )
+
+    port = int(os.getenv("NETSENTRY_SMTP_PORT", "587"))
+    use_ssl = os.getenv("NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
+    use_starttls = os.getenv("NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
+    smtp_factory = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+    try:
+        with smtp_factory(host, port, timeout=15) as smtp:
+            if use_starttls and not use_ssl:
+                smtp.starttls()
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(message)
+    except (OSError, smtplib.SMTPException) as exc:
+        raise HTTPException(503, "Could not send the verification email. Check the SMTP settings and try again.") from exc
+
+
+def _create_email_verification(user: User, db: Session) -> str:
+    delivery_mode = _validate_email_delivery_config()
+    secret = _verification_secret()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    now = datetime.now(timezone.utc)
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+    digest = hmac.new(secret, f"{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
+    if record:
+        record.code_hash = digest
+        record.expires_at = now + timedelta(minutes=EMAIL_CODE_MINUTES)
+        record.created_at = now
+        record.attempts = 0
+    else:
+        db.add(EmailVerification(
+            user_id=user.id,
+            code_hash=digest,
+            expires_at=now + timedelta(minutes=EMAIL_CODE_MINUTES),
+            created_at=now,
+            attempts=0,
+        ))
+    db.commit()
+    try:
+        send_verification_email(user.email, user.name, code)
+    except Exception:
+        logger.exception("Could not deliver account verification email")
+        raise
+    return delivery_mode
+
+
+def _enforce_resend_cooldown(user: User, db: Session) -> None:
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+    if not record:
+        return
+    created = record.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    wait = EMAIL_CODE_RESEND_SECONDS - (datetime.now(timezone.utc) - created).total_seconds()
+    if wait > 0:
+        raise HTTPException(429, f"Please wait {int(wait) + 1} seconds before requesting another code.")
 
 
 def user_json(user: User) -> dict:
@@ -117,25 +242,80 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
         raise HTTPException(422, "Enter your name.")
     if not re.search(r"[a-z]", payload.password) or not re.search(r"[A-Z]", payload.password) or not re.search(r"\d", payload.password):
         raise HTTPException(422, "Password must include an uppercase letter, a lowercase letter, and a number.")
-    user = User(name=name, email=email, password_hash=_password_hash(payload.password))
+    if len(payload.password) < 6:
+        raise HTTPException(422, "Password must be at least 6 characters.")
+    _validate_email_delivery_config()
+    user = User(name=name, email=email, password_hash=_password_hash(payload.password), email_verified=False)
     db.add(user)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        if db.query(User).filter(User.email == email).first():
+        existing = db.query(User).filter(User.email == email).first()
+        if existing and not existing.email_verified:
+            _enforce_resend_cooldown(existing, db)
+            delivery_mode = _create_email_verification(existing, db)
+            message = "A new code was written to the backend console for local development." if delivery_mode == "console" else "A new verification code has been sent to your email."
+            return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
+        if existing:
             raise HTTPException(409, "An account with this email already exists.") from exc
         raise
     db.refresh(user)
+    delivery_mode = _create_email_verification(user, db)
+    message = "A six-digit code was written to the backend console. Enter it here to finish local development signup." if delivery_mode == "console" else "Enter the six-digit code sent to your email to finish creating your account."
+    return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
+
+
+@router.post("/verify-email")
+def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = Depends(get_db)):
+    email = _normalize_gmail(payload.email)
+    user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
+    if not user:
+        raise HTTPException(400, "This verification code is invalid or expired. Request a new code and try again.")
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+    if not record:
+        raise HTTPException(400, "This verification code is invalid or expired. Request a new code and try again.")
+    now = datetime.now(timezone.utc)
+    expiry = record.expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry <= now:
+        raise HTTPException(400, "This verification code has expired. Request a new code.")
+    if record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many incorrect codes. Request a new code.")
+    secret = _verification_secret()
+    submitted = hmac.new(secret, f"{user.id}:{payload.code}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(submitted, record.code_hash):
+        record.attempts += 1
+        db.commit()
+        raise HTTPException(400, "That code does not match. Check your email and try again.")
+
+    user.email_verified = True
+    db.delete(record)
+    db.commit()
+    if not user.is_active:
+        raise HTTPException(403, "This NetSentry account is unavailable.")
     _issue_session(user, response, db)
     return {"user": user_json(user)}
+
+
+@router.post("/verification/resend", status_code=202)
+def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+    email = _normalize_gmail(payload.email)
+    user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
+    if user:
+        _enforce_resend_cooldown(user, db)
+        _create_email_verification(user, db)
+    return {"message": "If an unverified account exists, a code was sent. For local console mode, check the backend terminal."}
 
 
 @router.post("/login")
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
     email = _normalize_gmail(payload.email)
     user = db.query(User).filter(User.email == email).first()
-    if not user or not _password_matches(payload.password, user.password_hash) or not user.is_active:
+    if user and not user.email_verified:
+        raise HTTPException(403, "Verify your email before signing in. Check your inbox for the six-digit code.")
+    if not user or not _password_matches(payload.password, user.password_hash):
         raise HTTPException(401, "Email or password is incorrect.")
     _issue_session(user, response, db)
     return {"user": user_json(user)}
@@ -202,6 +382,8 @@ def login_with_google(payload: GoogleAuthRequest, request: Request, response: Re
                 is_active=True,
             )
             db.add(user)
+
+    user.email_verified = True
 
     if not user.is_active:
         raise HTTPException(403, "This NetSentry account is unavailable.")

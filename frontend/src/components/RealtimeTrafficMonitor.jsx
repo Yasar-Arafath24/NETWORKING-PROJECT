@@ -522,7 +522,9 @@ export default function RealtimeTrafficMonitor() {
         .tm-muted { color: #64748b; font-size: 13px; line-height: 1.6; }
         .tm-header .tm-muted { margin: 8px 0 0; }
         .tm-actions { display: flex; gap: 9px; flex-wrap: wrap; }
-        .tm-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 9px 13px; border: 1px solid #e2e8f0; border-radius: 9px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 150ms ease; background: #fff; color: #334155; }
+        .tm-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 9px 13px; border: 1px solid #e2e8f0; border-radius: 9px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 150ms ease, transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease; background: #fff; color: #334155; }
+        .tm-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 12px rgba(15, 23, 42, .12); }
+        .tm-button:active:not(:disabled) { transform: translateY(0); }
         .tm-button:disabled { opacity: 0.5; cursor: not-allowed; }
         .tm-primary { border-color: #2563eb; color: #fff; background: #2563eb; }
         .tm-primary:hover:not(:disabled) { background: #1d4ed8; }

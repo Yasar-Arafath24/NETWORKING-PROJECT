@@ -1,4 +1,10 @@
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load the project's local environment file regardless of the shell's cwd.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +16,7 @@ from backend.app.services.database import Base, engine
 from sqlalchemy import inspect, text
 from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
-from backend.app.models.user import User, UserSession
+from backend.app.models.user import EmailVerification, User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
 
 Base.metadata.create_all(bind=engine)
@@ -22,6 +28,11 @@ for table_name in ("live_flow_records", "network_alerts"):
     with engine.begin() as connection:
         connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_owner_id ON {table_name} (owner_id)"))
 user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+if "email_verified" not in user_columns:
+    default = "TRUE" if engine.dialect.name == "postgresql" else "1"
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT {default}"))
+    user_columns.add("email_verified")
 if "google_subject" not in user_columns:
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE users ADD COLUMN google_subject VARCHAR(255) NULL"))

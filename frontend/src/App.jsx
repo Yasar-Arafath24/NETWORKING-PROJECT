@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Shield } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle, Mail, Shield } from "lucide-react";
 import Dashboard from "./components/Dashboard";
-import { authenticate, authenticateWithGoogle, getCurrentUser, getGoogleSignInConfig, signOut } from "./services/api";
+import { authenticate, authenticateWithGoogle, getCurrentUser, getGoogleSignInConfig, resendSignupCode, signOut, verifySignupEmail } from "./services/api";
 
 function loadGoogleIdentity() {
   if (window.google?.accounts?.id) return Promise.resolve(window.google);
@@ -31,8 +31,11 @@ function isGmailAddress(value) {
 
 function AccountGate({ onAuthenticated }) {
   const [registering, setRegistering] = useState(false);
+  const [verificationPending, setVerificationPending] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -46,13 +49,14 @@ function AccountGate({ onAuthenticated }) {
   const gmailValid = isGmailAddress(email);
   const isBusy = busy || googleBusy;
   const passwordValid = !registering || (
-    password.length >= 12 &&
+    password.length >= 6 &&
     /[a-z]/.test(password) &&
     /[A-Z]/.test(password) &&
     /\d/.test(password)
   );
-  const canSubmit = !isBusy && gmailValid && passwordValid &&
-    Boolean(password) && (!registering || Boolean(name.trim()));
+  const canSubmit = !isBusy && gmailValid && (verificationPending
+    ? /^\d{6}$/.test(verificationCode)
+    : Boolean(password) && passwordValid && (!registering || Boolean(name.trim())));
 
   useEffect(() => {
     let active = true;
@@ -111,11 +115,43 @@ function AccountGate({ onAuthenticated }) {
     if (!canSubmit) return;
     setBusy(true);
     setError("");
-    const payload = { email: email.trim().toLowerCase(), password };
-    if (registering) payload.name = name.trim();
+    setNotice("");
     try {
-      const result = await authenticate(registering ? "register" : "login", payload);
-      onAuthenticated(result.user);
+      if (verificationPending) {
+        const result = await verifySignupEmail(email.trim().toLowerCase(), verificationCode);
+        onAuthenticated(result.user);
+      } else {
+        const payload = { email: email.trim().toLowerCase(), password };
+        if (registering) payload.name = name.trim();
+        const result = await authenticate(registering ? "register" : "login", payload);
+        if (registering) {
+          setVerificationPending(true);
+          setVerificationCode("");
+          setPassword("");
+          setNotice(result.message || "Verification code sent. Enter it to continue.");
+        } else {
+          onAuthenticated(result.user);
+        }
+      }
+    } catch (err) {
+      setError(err.message);
+      if (!registering && err.status === 403 && /verify your email/i.test(err.message)) {
+        setRegistering(true);
+        setVerificationPending(true);
+        setNotice("Your account needs email confirmation. Enter the code or request a new one.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendCode() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await resendSignupCode(email.trim().toLowerCase());
+      setNotice(result.message || "If an unverified account exists, a new code has been sent.");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -126,12 +162,16 @@ function AccountGate({ onAuthenticated }) {
   return (
     <main className="account-gate">
       <form className="account-card" onSubmit={submit}>
-        <div className="account-mark"><Shield size={22} /></div>
-        <p className="account-eyebrow">NETSENTRY AI</p>
-        <h1>{registering ? "Create your account" : "Welcome back"}</h1>
-        <p className="account-copy">Sign in to access your private network analysis workspace.</p>
-        {registering && <label>Name<input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength="120" /></label>}
-        <label>Email
+        <div className="account-brand"><div className="account-mark"><Shield size={22} /></div><div><strong>NetSentry AI</strong><span>Network intelligence workspace</span></div></div>
+        <p className="account-eyebrow">{verificationPending ? "EMAIL CONFIRMATION" : "SECURE WORKSPACE ACCESS"}</p>
+        <h1>{verificationPending ? "Check your inbox" : registering ? "Create your account" : "Welcome back"}</h1>
+        <p className="account-copy">{verificationPending
+          ? `Enter the six-digit code we sent to ${email}. It expires in 10 minutes.`
+          : registering
+            ? "Set up your account to save your network analyses and alerts."
+            : "Sign in to continue to your private network analysis workspace."}</p>
+        {!verificationPending && registering && <label>Name<input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength="120" /></label>}
+        {!verificationPending && <label>Email
           <input
             name="email"
             type="email"
@@ -148,12 +188,15 @@ function AccountGate({ onAuthenticated }) {
               ? "Enter a valid Gmail address ending in @gmail.com."
               : ""}
           </span>
-        </label>
-        <label>Password<input name="password" type="password" autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} minLength={registering ? 12 : 1} required /></label>
-        {registering && <small>At least 12 characters, with uppercase, lowercase, and a number.</small>}
+        </label>}
+        {verificationPending && <label>Verification code<input className="verification-code-input" name="verification-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(event) => { setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} placeholder="000000" aria-label="Six-digit email verification code" required /></label>}
+        {!verificationPending && <label>Password<input name="password" type="password" autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} minLength={registering ? 6 : 1} required /></label>}
+        {!verificationPending && registering && <small className="account-password-help">At least 6 characters, including uppercase, lowercase, and a number.</small>}
         {error && <p className="account-error" role="alert">{error}</p>}
-        <button disabled={!canSubmit}>{busy ? "Authenticating…" : registering ? "Create account" : "Sign in"}</button>
-        <div className="google-divider"><span>OR</span></div>
+        {notice && <p className="account-success" role="status">{notice}</p>}
+        <button className="account-primary-button" disabled={!canSubmit}>{busy ? <><LoaderCircle size={17} className="account-spin" /> {verificationPending ? "Verifying code…" : "Please wait…"}</> : <>{verificationPending ? "Verify email and continue" : registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></>}</button>
+        {verificationPending && <div className="account-verify-actions"><button type="button" className="account-link-button" disabled={isBusy} onClick={resendCode}><Mail size={15} /> Resend code</button><button type="button" className="account-link-button" disabled={isBusy} onClick={() => { setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); }}><ArrowLeft size={15} /> Back to signup</button></div>}
+        {!verificationPending && <><div className="google-divider"><span>OR</span></div>
         <div className={googleBusy ? "google-button-slot is-loading" : "google-button-slot"} aria-busy={googleBusy}>
           {googleConfig.client_id && <div ref={googleButtonRef} className="google-button-target" />}
           {!googleConfig.client_id && googleConfig.checked && !googleError && <p className="google-config-note">Google sign-in is not configured for this site.</p>}
@@ -162,47 +205,25 @@ function AccountGate({ onAuthenticated }) {
         <p className="google-help">Use a verified Gmail address. Close the Google window to cancel, then try again.</p>
         {googleError && <p className="account-error" role="alert">{googleError}</p>}
         <p className="account-switch">{registering ? "Already have an account?" : "New to NetSentry?"}{" "}
-          <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setError(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
+          <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
             {registering ? "Sign in" : "Create an account"}
           </button>
-        </p>
+        </p></>}
+        <p className="account-security-note"><CheckCircle2 size={14} /> Sign in once and NetSentry will restore your session automatically on this device.</p>
       </form>
     </main>
   );
 }
 
 export default function App() {
-  const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setLoading(false), 3000);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     getCurrentUser().then((result) => setUser(result.user)).catch(() => {}).finally(() => setAuthChecked(true));
   }, []);
 
-  if (loading) {
-    return (
-      <div className="netsentry-loader" role="status" aria-live="polite">
-        <div className="netsentry-loader-mark" aria-hidden="true">
-          <span className="netsentry-loader-orbit" />
-          <Shield size={34} strokeWidth={1.65} />
-          <span className="netsentry-loader-signal" />
-        </div>
-        <strong>NetSentry <span>AI</span></strong>
-        <p>Preparing network intelligence</p>
-        <div className="netsentry-loader-progress" aria-hidden="true">
-          <span />
-        </div>
-      </div>
-    );
-  }
-
-  if (!authChecked) return <div className="account-loading">Checking your session…</div>;
+  if (!authChecked) return <div className="account-loading"><LoaderCircle size={20} className="account-spin" /> Restoring your secure session…</div>;
   if (!user) return <AccountGate onAuthenticated={setUser} />;
   return (
     <>
