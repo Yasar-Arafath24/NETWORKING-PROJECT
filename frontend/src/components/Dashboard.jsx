@@ -24,6 +24,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import {
   Area,
@@ -37,7 +38,7 @@ import {
 
 import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
-import WebsiteMonitoring from "./WebsiteMonitoring";
+import WebsiteTrafficMonitoring from "./WebsiteTrafficMonitoring";
 import WebsiteAnomalyAnalytics from "./WebsiteAnomalyAnalytics";
 import WebsiteIntegrations from "./WebsiteIntegrations";
 import HistoricalTrafficAnalytics from "./HistoricalTrafficAnalytics";
@@ -50,21 +51,37 @@ import {
   setWebsiteAlertStatus,
   checkBackendConnection,
   API_BASE_URL,
+  getWebsites,
 } from "../services/api";
 
 const navigation = [
-  { label: "Overview", icon: LayoutDashboard },
-  { label: "PCAP Analysis", icon: FileSearch },
-  { label: "Traffic Monitoring", icon: Activity },
-  { label: "Website Monitoring", icon: Globe2 },
-  { label: "AI Detection", icon: ShieldAlert },
-  { label: "Security Alerts", icon: Bell },
-  { label: "Analysis History", icon: FileText },
+  { label: "Dashboard", page: "Overview", icon: LayoutDashboard },
+  { label: "Website Integration", page: "Website Integrations", icon: Globe2 },
+  { label: "Traffic Monitoring", page: "Traffic Monitoring", icon: Activity },
+  { label: "PCAP Analysis", page: "PCAP Analysis", icon: FileSearch },
+  { label: "Alerts", page: "Security Alerts", icon: Bell },
+  { label: "AI Detection", page: "AI Detection", icon: ShieldAlert },
+  { label: "Analysis History", page: "Analysis History", icon: FileText },
 ];
 
 const preferenceNavigation = [
-  { label: "Settings", icon: Settings },
+  { label: "Settings", page: "Settings", icon: Settings },
 ];
+
+const pagePaths = {
+  Overview: "/dashboard",
+  "Website Integrations": "/website-integration",
+  "Traffic Monitoring": "/traffic-monitoring",
+  "PCAP Analysis": "/pcap-analysis",
+  "Security Alerts": "/alerts",
+  Settings: "/settings",
+  "AI Detection": "/ai-detection",
+  "Analysis History": "/analysis-history",
+};
+
+const pathPages = Object.fromEntries(
+  Object.entries(pagePaths).map(([page, path]) => [path, page])
+);
 
 function GithubIcon() {
   return (
@@ -363,6 +380,9 @@ function SeverityBadge({ severity = "medium", children }) {
 }
 
 export default function Dashboard({ user = null, onSignOut }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const activePage = pathPages[location.pathname] || "Overview";
   const [uploadingPcap, setUploadingPcap] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(true);
@@ -373,10 +393,14 @@ export default function Dashboard({ user = null, onSignOut }) {
   const [historyError, setHistoryError] = useState("");
   const [persistedAlerts, setPersistedAlerts] = useState([]);
   const [securityAlertsError, setSecurityAlertsError] = useState("");
+  const [websites, setWebsites] = useState([]);
+  const [websitesError, setWebsitesError] = useState("");
+  const [websitesLoading, setWebsitesLoading] = useState(true);
+  const [alertSeverityFilter, setAlertSeverityFilter] = useState("all");
   const [uploadError, setUploadError] = useState("");
+  const [accountError, setAccountError] = useState("");
 
   const [backendStatus, setBackendStatus] = useState("Checking");
-  const [activePage, setActivePage] = useState("Overview");
   const [activeWebsiteId, setActiveWebsiteId] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -434,6 +458,19 @@ export default function Dashboard({ user = null, onSignOut }) {
     }
   }, []);
 
+  const loadWebsites = useCallback(async (silent = false) => {
+    if (!silent) setWebsitesLoading(true);
+    try {
+      const result = await getWebsites();
+      setWebsites(Array.isArray(result?.websites) ? result.websites : []);
+      setWebsitesError("");
+    } catch (error) {
+      setWebsitesError(error instanceof Error ? error.message : "Unable to load website integrations.");
+    } finally {
+      if (!silent) setWebsitesLoading(false);
+    }
+  }, []);
+
   async function changeWebsiteAlertStatus(alert, status) {
     const alertId = Number(String(alert.id).replace(/^website-/, ""));
     if (!alert.site_id || !Number.isInteger(alertId)) return;
@@ -462,6 +499,12 @@ export default function Dashboard({ user = null, onSignOut }) {
   }, [loadPersistedAlerts]);
 
   useEffect(() => {
+    const initial = window.setTimeout(loadWebsites, 0);
+    const timer = window.setInterval(() => loadWebsites(true), 15000);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, [loadWebsites]);
+
+  useEffect(() => {
     let active = true;
     const checkBackend = async () => {
       try {
@@ -478,6 +521,12 @@ export default function Dashboard({ user = null, onSignOut }) {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!pathPages[location.pathname]) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     function handleShortcut(event) {
@@ -513,7 +562,7 @@ export default function Dashboard({ user = null, onSignOut }) {
       setAnalysis(result);
       setAnalysisError("");
       setAnalysisLoading(false);
-      setActivePage("PCAP Analysis");
+      navigateTo("PCAP Analysis");
 
       await loadHistory();
 
@@ -532,10 +581,18 @@ export default function Dashboard({ user = null, onSignOut }) {
   }
 
   function navigateTo(label) {
-    setActivePage(label);
+    navigate(pagePaths[label] || "/dashboard");
     setMobileMenuOpen(false);
     setProfileMenuOpen(false);
     setSearchQuery("");
+  }
+
+  async function handleSignOut() {
+    try {
+      await onSignOut?.();
+    } catch (error) {
+      setAccountError(error.message || "Unable to sign out.");
+    }
   }
 
   const flows = useMemo(() => getFlows(analysis), [analysis]);
@@ -562,6 +619,16 @@ export default function Dashboard({ user = null, onSignOut }) {
     const combined = [...getAlerts(analysis), ...persistedAlerts];
     return combined.sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0));
   }, [analysis, persistedAlerts]);
+  const filteredAlerts = alertSeverityFilter === "all"
+    ? alerts
+    : alerts.filter((alert) => getSeverity(alert) === alertSeverityFilter);
+  const connectedWebsiteCount = websites.filter(
+    (site) => ["CONNECTED", "RECEIVING"].includes(String(site.integration_status || site.collector_status || "").toUpperCase())
+  ).length;
+  const websiteRequestTotal = websites.reduce((sum, site) => sum + (Number(site.total_events) || 0), 0);
+  const websiteTrafficBytes = websites.reduce((sum, site) => sum + (Number(site.total_response_bytes) || 0), 0);
+  const websiteRequestsPerMinute = websites.reduce((sum, site) => sum + (Number(site.requests_per_minute) || 0), 0);
+  const websiteAnomalyTotal = websites.reduce((sum, site) => sum + (Number(site.anomaly_count) || 0), 0);
 
   const criticalAlerts = alerts.filter(
     (alert) => getSeverity(alert) === "critical"
@@ -640,7 +707,7 @@ export default function Dashboard({ user = null, onSignOut }) {
       <>
         <PageHeading
           eyebrow="NETWORK OPERATIONS"
-          title="Security overview"
+          title="Dashboard"
           description="Monitor network activity and review your traffic analysis."
           action={primaryAction}
         />
@@ -710,7 +777,45 @@ export default function Dashboard({ user = null, onSignOut }) {
             description="Reports returned by the history API"
             icon={FileText}
           />
+          <MetricCard
+            title="Connected websites"
+            value={websitesLoading ? "…" : websitesError ? "—" : formatNumber(connectedWebsiteCount)}
+            description={websitesError ? "Website status unavailable" : `${websites.length} registered to your account`}
+            icon={Globe2}
+          />
+          <MetricCard
+            title="Website requests"
+            value={websitesLoading ? "…" : websitesError ? "—" : formatNumber(websiteRequestTotal)}
+            description="Accepted collector events"
+            icon={Activity}
+          />
+          <MetricCard
+            title="Website traffic volume"
+            value={websitesLoading ? "…" : websitesError ? "—" : formatBytes(websiteTrafficBytes)}
+            description="Sum of reported response bytes"
+            icon={Network}
+          />
+          <MetricCard
+            title="Website requests / minute"
+            value={websitesLoading ? "…" : websitesError ? "—" : formatNumber(websiteRequestsPerMinute)}
+            description="Accepted events in the last 60 seconds"
+            icon={Gauge}
+          />
+          <MetricCard
+            title="Website anomalies"
+            value={websitesLoading ? "…" : websitesError ? "—" : formatNumber(websiteAnomalyTotal)}
+            description="Events flagged by website detection"
+            icon={ShieldAlert}
+          />
         </section>
+
+        {websitesError && (
+          <div className="panel" role="alert">
+            <strong>Unable to load website integrations</strong>
+            <p>{websitesError}</p>
+            <button type="button" className="secondary-button" onClick={loadWebsites}>Retry</button>
+          </div>
+        )}
 
         {historyError && (
           <div className="panel" role="alert">
@@ -1018,38 +1123,36 @@ export default function Dashboard({ user = null, onSignOut }) {
             </details>
           </section>
         )}
+
+        <section>
+          <PageHeading
+            eyebrow="NETWORK / PCAP SOURCE"
+            title="Historical network traffic"
+            description="Saved PCAP flow analytics are kept separate from website HTTP access-log events."
+          />
+          <HistoricalTrafficAnalytics />
+        </section>
       </>
     );
   }
 
   function renderTrafficMonitoring() {
     return (
-      <>
-        <PageHeading
-          eyebrow="HISTORICAL NETWORK ANALYTICS"
-          title="Traffic Monitoring"
-          description="Analyze saved PCAP traffic, compare historical flow patterns, and investigate protocols, addresses, and ports."
-          action={primaryAction}
-        />
-        <HistoricalTrafficAnalytics />
-      </>
+      <WebsiteTrafficMonitoring
+        initialSiteId={activeWebsiteId}
+        onOpenIntegrations={() => navigateTo("Website Integrations")}
+      />
     );
   }
 
-  function renderWebsiteMonitoring() {
+  function renderWebsiteIntegrations() {
     return (
-      <>
-        <PageHeading
-          eyebrow="AUTHORIZED WEBSITE TELEMETRY"
-          title="Website Monitoring"
-          description="Configure authorized website collectors and inspect their live access-log traffic."
-          action={primaryAction}
-        />
-        <WebsiteIntegrations
-          onOpenLiveMonitoring={(siteId) => setActiveWebsiteId(siteId)}
-        />
-        <WebsiteMonitoring embedded initialSiteId={activeWebsiteId} />
-      </>
+      <WebsiteIntegrations
+        onOpenLiveMonitoring={(siteId) => {
+          setActiveWebsiteId(siteId);
+          navigateTo("Traffic Monitoring");
+        }}
+      />
     );
   }
 
@@ -1189,7 +1292,7 @@ export default function Dashboard({ user = null, onSignOut }) {
       <>
         <PageHeading
           eyebrow="SECURITY OPERATIONS"
-          title="Security Alerts"
+          title="Alerts"
           description="Review website traffic heuristics, live network alerts, and suspicious flows."
           action={primaryAction}
         />
@@ -1240,16 +1343,27 @@ export default function Dashboard({ user = null, onSignOut }) {
           </div>
 
           {securityAlertsError && <div className="website-error" role="alert">{securityAlertsError}</div>}
-          {alerts.length === 0 && suspiciousFlows.length === 0 ? (
+          <label className="alert-filter">
+            Severity
+            <select value={alertSeverityFilter} onChange={(event) => setAlertSeverityFilter(event.target.value)}>
+              <option value="all">All severities</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+
+          {filteredAlerts.length === 0 && suspiciousFlows.length === 0 ? (
             <EmptyState
-              title="No alerts yet"
-              description="Website traffic heuristics appear here after your authorized collector sends flagged request events. HTTP error codes alone are not treated as attacks."
+              title={alerts.length === 0 ? "No alerts yet" : "No alerts match this severity"}
+              description={alerts.length === 0 ? "Website traffic heuristics appear here after your authorized collector sends flagged request events. HTTP error codes alone are not treated as attacks." : "Choose another severity to review the available findings."}
             />
           ) : (
             <>
-              {alerts.length > 0 && (
+              {filteredAlerts.length > 0 && (
                 <div className="security-alert-list">
-                  {alerts.map((alert, index) => {
+                  {filteredAlerts.map((alert, index) => {
                     const severity = getSeverity(alert);
 
                     return (
@@ -1268,6 +1382,7 @@ export default function Dashboard({ user = null, onSignOut }) {
                           </div>
 
                           <p>{getAlertDescription(alert)}</p>
+                          <span className="alert-detail"><strong>Recommended action:</strong> {alert.recommended_action || "Review related activity and verify whether this behavior is authorized before taking action."}</span>
 
                           {(alert.source_ip || alert.src_ip) && (
                             <span className="alert-detail">
@@ -1447,8 +1562,39 @@ export default function Dashboard({ user = null, onSignOut }) {
         <PageHeading
           eyebrow="PREFERENCES"
           title="Settings"
-          description="Configuration information for your development workspace."
+          description="Review your account profile, security status, and application connection details."
         />
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>User profile</h2>
+              <p>Signed-in account information</p>
+            </div>
+            <Settings size={20} />
+          </div>
+          <div className="system-row">
+            <div className="system-row-copy"><strong>Name</strong><small>{user?.name || "Not provided"}</small></div>
+          </div>
+          <div className="system-row">
+            <div className="system-row-copy"><strong>Email</strong><small>{user?.email || "Not available"}</small></div>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Security</h2>
+              <p>Authentication and session controls</p>
+            </div>
+            <Shield size={20} />
+          </div>
+          <div className="system-row">
+            <div className="system-row-copy"><strong>Authenticated session</strong><small>Protected pages and APIs require your signed-in account.</small></div>
+            <span className="status-neutral">Active</span>
+          </div>
+          <button type="button" className="secondary-button" onClick={handleSignOut}><LogOut size={15} /> Sign out</button>
+        </section>
 
         <section className="panel">
           <div className="panel-heading">
@@ -1484,8 +1630,8 @@ export default function Dashboard({ user = null, onSignOut }) {
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
 
-      case "Website Monitoring":
-        return renderWebsiteMonitoring();
+      case "Website Integrations":
+        return renderWebsiteIntegrations();
 
       case "AI Detection":
         return renderAiDetection();
@@ -1545,20 +1691,20 @@ export default function Dashboard({ user = null, onSignOut }) {
         <div className="sidebar-label">WORKSPACE</div>
 
         <nav className="navigation" aria-label="Main navigation">
-          {navigation.map(({ label, icon: Icon }) => (
+          {navigation.map(({ label, page, icon: Icon }) => (
             <button
               type="button"
               key={label}
               className={`nav-item ${
-                activePage === label ? "nav-active" : ""
+                activePage === page ? "nav-active" : ""
               }`}
-              aria-current={activePage === label ? "page" : undefined}
-              onClick={() => navigateTo(label)}
+              aria-current={activePage === page ? "page" : undefined}
+              onClick={() => navigateTo(page)}
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{label}</span>
 
-              {label === "Security Alerts" && alerts.length > 0 && (
+              {page === "Security Alerts" && alerts.length > 0 && (
                 <span className="nav-count">{alerts.length}</span>
               )}
             </button>
@@ -1568,15 +1714,15 @@ export default function Dashboard({ user = null, onSignOut }) {
         <div className="sidebar-label tools-label">PREFERENCES</div>
 
         <nav className="navigation" aria-label="Preferences">
-          {preferenceNavigation.map(({ label, icon: Icon }) => (
+          {preferenceNavigation.map(({ label, page, icon: Icon }) => (
             <button
               type="button"
               key={label}
               className={`nav-item ${
-                activePage === label ? "nav-active" : ""
+                activePage === page ? "nav-active" : ""
               }`}
-              aria-current={activePage === label ? "page" : undefined}
-              onClick={() => navigateTo(label)}
+              aria-current={activePage === page ? "page" : undefined}
+              onClick={() => navigateTo(page)}
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{label}</span>
@@ -1601,7 +1747,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           </button>
 
           <div className="breadcrumb">
-            Workspace <span>/</span> <strong>{activePage}</strong>
+            Workspace <span>/</span> <strong>{navigation.find((item) => item.page === activePage)?.label || activePage}</strong>
           </div>
 
           <div className="topbar-actions">
@@ -1635,11 +1781,11 @@ export default function Dashboard({ user = null, onSignOut }) {
               {searchQuery.trim() && (
                 <div className="search-results">
                   {searchResults.length > 0 ? (
-                    searchResults.map(({ label, icon: Icon }) => (
+                    searchResults.map(({ label, page, icon: Icon }) => (
                       <button
                         type="button"
                         key={label}
-                        onClick={() => navigateTo(label)}
+                        onClick={() => navigateTo(page)}
                       >
                         <Icon size={17} />
                         <span>{label}</span>
@@ -1695,11 +1841,7 @@ export default function Dashboard({ user = null, onSignOut }) {
                   <button
                     type="button"
                     onClick={async () => {
-                      try {
-                        await onSignOut?.();
-                      } catch (error) {
-                        setHistoryError(error.message || "Unable to sign out.");
-                      }
+                      await handleSignOut();
                     }}
                   >
                     <LogOut size={16} />
@@ -1711,6 +1853,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           </div>
         </header>
 
+        {accountError && <div className="website-error" role="alert">{accountError}</div>}
         <div className="dashboard-content" key={activePage}>
           {renderPage()}
 
@@ -1746,7 +1889,8 @@ export default function Dashboard({ user = null, onSignOut }) {
               {[
                 ["Overview", "Dashboard overview"],
                 ["PCAP Analysis", "Analyze traffic captures"],
-                ["Website Monitoring", "Manage website traffic"],
+                ["Traffic Monitoring", "View live website requests"],
+                ["Website Integrations", "Manage website collectors"],
                 ["Analysis History", "Review saved reports"],
                 ["Settings", "Manage preferences"],
               ].map(([label], index) => (
@@ -1971,6 +2115,21 @@ export default function Dashboard({ user = null, onSignOut }) {
           display: flex;
           flex-direction: column;
           gap: 12px;
+        }
+        .alert-filter {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0 0 14px;
+          color: var(--muted-text, #64748b);
+          font-size: 12px;
+        }
+        .alert-filter select {
+          padding: 7px 9px;
+          border: 1px solid var(--border-color, #e2e8f0);
+          border-radius: 7px;
+          color: var(--text-color, #1e293b);
+          background: var(--panel-background, #fff);
         }
 
         .security-alert-item {
@@ -2222,6 +2381,13 @@ export default function Dashboard({ user = null, onSignOut }) {
 
           .sidebar.sidebar-open {
             transform: translateX(0);
+          }
+
+          .sidebar.sidebar-open .brand > span:last-child,
+          .sidebar.sidebar-open .sidebar-label,
+          .sidebar.sidebar-open .nav-item span,
+          .sidebar.sidebar-open .sidebar-bottom {
+            display: block;
           }
 
           .mobile-sidebar-backdrop {

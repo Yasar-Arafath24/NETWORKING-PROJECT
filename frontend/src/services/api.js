@@ -172,7 +172,10 @@ export function websiteLiveUrl(id) {
 
 async function request(url, options) {
   let response;
-  const csrf = document.cookie.match(/(?:^|; )netsentry_csrf=([^;]*)/)?.[1];
+  const csrfCookie = url.endsWith("/api/v1/auth/reset-password")
+    ? "netsentry_reset_csrf"
+    : "netsentry_csrf";
+  const csrf = document.cookie.match(new RegExp(`(?:^|; )${csrfCookie}=([^;]*)`))?.[1];
   const headers = new Headers(options?.headers || {});
   if (csrf && options?.method && options.method !== "GET") {
     headers.set("X-CSRF-Token", decodeURIComponent(csrf));
@@ -191,6 +194,30 @@ async function request(url, options) {
   }
 
   return parseResponse(response);
+}
+
+export async function requestPasswordReset(email) {
+  return request(API_BASE_URL + "/api/v1/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function verifyPasswordResetOtp(email, code) {
+  return request(API_BASE_URL + "/api/v1/auth/verify-reset-otp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code }),
+  });
+}
+
+export async function resetAccountPassword(password) {
+  return request(API_BASE_URL + "/api/v1/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
 }
 
 /**

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import formataddr
 import hashlib
 import hmac
 import logging
@@ -7,13 +8,14 @@ import os
 import re
 import secrets
 import smtplib
+import ssl
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.models.user import EmailVerification, User, UserSession
+from backend.app.models.user import AuthRateLimit, EmailVerification, PasswordResetOtp, User, UserSession
 from backend.app.services.database import get_db
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
@@ -21,9 +23,13 @@ logger = logging.getLogger(__name__)
 SESSION_COOKIE = "netsentry_session"
 CSRF_COOKIE = "netsentry_csrf"
 SESSION_DAYS = 7
-EMAIL_CODE_MINUTES = 10
+EMAIL_CODE_MINUTES = 5
 EMAIL_CODE_RESEND_SECONDS = 60
 EMAIL_CODE_MAX_ATTEMPTS = 5
+PASSWORD_RESET_OTP_MINUTES = 5
+PASSWORD_RESET_TOKEN_MINUTES = 10
+RESET_RATE_LIMIT_WINDOW_SECONDS = 900
+RESET_RATE_LIMIT_MAX_REQUESTS = 20
 
 
 class RegisterRequest(BaseModel):
@@ -51,6 +57,18 @@ class GoogleAuthRequest(BaseModel):
     nonce: str = Field(min_length=32, max_length=128)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class VerifyResetOtpRequest(ForgotPasswordRequest):
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class ResetPasswordRequest(BaseModel):
+    password: str = Field(min_length=6, max_length=128)
+
+
 def verify_google_credential(credential: str, client_id: str) -> dict:
     """Verify a Google Identity Services ID token using Google's auth library."""
     from google.auth.transport.requests import Request as GoogleRequest
@@ -59,12 +77,10 @@ def verify_google_credential(credential: str, client_id: str) -> dict:
     return id_token.verify_oauth2_token(credential, GoogleRequest(), audience=client_id)
 
 
-def _normalize_gmail(value: str) -> str:
+def _normalize_email(value: str) -> str:
     email = value.strip().lower()
-    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-        raise HTTPException(422, "Enter a valid Gmail address ending in @gmail.com.")
-    if not email.endswith("@gmail.com"):
-        raise HTTPException(422, "Only Gmail addresses ending in @gmail.com are allowed.")
+    if not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", email, re.IGNORECASE):
+        raise HTTPException(422, "Enter a valid email address.")
     return email
 
 
@@ -94,63 +110,110 @@ def _verification_secret() -> bytes:
 
 def _email_delivery_mode() -> str:
     mode = os.getenv("NETSENTRY_EMAIL_DELIVERY", "smtp").strip().lower()
-    if mode not in {"smtp", "console"}:
-        raise HTTPException(503, "Email verification delivery must be set to smtp or console.")
-    if mode == "console" and os.getenv("NETSENTRY_ENV", "").strip().lower() != "development":
-        raise HTTPException(503, "Console OTP delivery is only allowed when NETSENTRY_ENV=development.")
+    if mode != "smtp":
+        raise HTTPException(503, "Email delivery is disabled. Set NETSENTRY_EMAIL_DELIVERY=smtp in the backend .env file.")
     return mode
+
+
+def _smtp_value(name: str, legacy_name: str, default: str = "") -> str:
+    value = os.getenv(name, "").strip()
+    return value or os.getenv(legacy_name, default).strip()
+
+
+def _smtp_password() -> str:
+    return os.getenv("SMTP_PASSWORD") or os.getenv("NETSENTRY_SMTP_PASSWORD", "")
 
 
 def _validate_email_delivery_config() -> str:
     _verification_secret()
     mode = _email_delivery_mode()
-    if mode == "smtp" and (
-        not os.getenv("NETSENTRY_SMTP_HOST", "").strip()
-        or not os.getenv("NETSENTRY_SMTP_FROM", "").strip()
-    ):
+    host = _smtp_value("SMTP_HOST", "NETSENTRY_SMTP_HOST")
+    sender = _smtp_value("SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
+    username = _smtp_value("SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
+    password = _smtp_password()
+    missing = [
+        variable
+        for variable, value in (("SMTP_HOST", host), ("SMTP_FROM_EMAIL", sender))
+        if not value
+    ]
+    if missing:
         raise HTTPException(
             503,
-            "Email verification cannot send codes: configure NETSENTRY_SMTP_HOST and NETSENTRY_SMTP_FROM, or use NETSENTRY_EMAIL_DELIVERY=console with NETSENTRY_ENV=development for local testing.",
+            f"Email delivery is unavailable. Configure {', '.join(missing)} in the backend .env file.",
         )
+    if bool(username) != bool(password):
+        raise HTTPException(503, "Configure both SMTP_USERNAME and SMTP_PASSWORD, or leave both blank.")
+    if host.lower() in {"smtp.gmail.com", "smtp.googlemail.com"} and not username:
+        raise HTTPException(
+            503,
+            "Gmail SMTP requires SMTP_USERNAME and SMTP_PASSWORD. Use the account email and a Google App Password.",
+        )
+    try:
+        port = int(_smtp_value("SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
+    except ValueError as exc:
+        raise HTTPException(503, "SMTP_PORT must be a valid port number.") from exc
+    use_ssl = _smtp_value("SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
+    use_tls = _smtp_value("SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
+    if not 1 <= port <= 65535 or (use_ssl and use_tls) or not (use_ssl or use_tls):
+        raise HTTPException(503, "Configure a valid SMTP port and exactly one of SMTP_USE_TLS or SMTP_USE_SSL.")
     return mode
 
 
-def send_verification_email(email: str, name: str, code: str) -> None:
-    """Deliver a signup code through configured SMTP; never return it to the browser."""
-    if _email_delivery_mode() == "console":
-        logger.warning("Development OTP for %s (%s): %s", email, name, code)
-        return
-
-    host = os.getenv("NETSENTRY_SMTP_HOST", "").strip()
-    sender = os.getenv("NETSENTRY_SMTP_FROM", "").strip()
-    username = os.getenv("NETSENTRY_SMTP_USERNAME", "").strip()
-    password = os.getenv("NETSENTRY_SMTP_PASSWORD", "")
-    if not host or not sender:
-        raise HTTPException(503, "Email verification is not configured. Set NETSENTRY_SMTP_HOST and NETSENTRY_SMTP_FROM on the backend.")
-
+def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str, expiration_minutes: int) -> None:
+    _validate_email_delivery_config()
+    host = _smtp_value("SMTP_HOST", "NETSENTRY_SMTP_HOST")
+    sender = _smtp_value("SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
+    sender_name = _smtp_value("SMTP_FROM_NAME", "NETSENTRY_SMTP_FROM_NAME", "NetSentry AI")
+    username = _smtp_value("SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
+    password = _smtp_password()
+    port = int(_smtp_value("SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
+    use_ssl = _smtp_value("SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
+    use_tls = _smtp_value("SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
     message = EmailMessage()
-    message["Subject"] = "Your NetSentry verification code"
-    message["From"] = sender
+    message["Subject"] = subject
+    message["From"] = formataddr((sender_name, sender))
     message["To"] = email
     message.set_content(
-        f"Hello {name},\n\nYour NetSentry verification code is {code}. "
-        f"It expires in {EMAIL_CODE_MINUTES} minutes.\n\n"
-        "If you did not create this account, you can ignore this message."
+        f"Hello {name},\n\nYour NetSentry {purpose} code is {code}. "
+        f"It expires in {expiration_minutes} minutes.\n\n"
+        "If you did not request this code, you can ignore this message."
     )
-
-    port = int(os.getenv("NETSENTRY_SMTP_PORT", "587"))
-    use_ssl = os.getenv("NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
-    use_starttls = os.getenv("NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
     smtp_factory = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
     try:
-        with smtp_factory(host, port, timeout=15) as smtp:
-            if use_starttls and not use_ssl:
-                smtp.starttls()
+        with (smtp_factory(host, port, timeout=15, context=ssl.create_default_context()) if use_ssl else smtp_factory(host, port, timeout=15)) as smtp:
+            if use_tls:
+                smtp.starttls(context=ssl.create_default_context())
             if username:
                 smtp.login(username, password)
-            smtp.send_message(message)
+            refused = smtp.send_message(message)
+            if refused:
+                raise HTTPException(
+                    503,
+                    "The SMTP server rejected the recipient address. Verify the email address and sender permissions.",
+                )
+    except smtplib.SMTPAuthenticationError as exc:
+        raise HTTPException(
+            503,
+            "SMTP authentication failed. Verify SMTP_USERNAME and SMTP_PASSWORD; Gmail requires a Google App Password.",
+        ) from exc
+    except (TimeoutError, ConnectionError) as exc:
+        raise HTTPException(
+            503,
+            "The SMTP connection timed out or failed. Check SMTP_HOST, SMTP_PORT, and TLS/SSL settings.",
+        ) from exc
     except (OSError, smtplib.SMTPException) as exc:
-        raise HTTPException(503, "Could not send the verification email. Check the SMTP settings and try again.") from exc
+        raise HTTPException(
+            503,
+            "SMTP email delivery failed. Check the SMTP server, TLS/SSL settings, sender address, and try again.",
+        ) from exc
+
+
+def send_verification_email(email: str, name: str, code: str) -> None:
+    _send_otp_email(email, name, code, "Your NetSentry verification code", "verification", EMAIL_CODE_MINUTES)
+
+
+def send_password_reset_email(email: str, name: str, code: str) -> None:
+    _send_otp_email(email, name, code, "Reset your NetSentry password", "password reset", PASSWORD_RESET_OTP_MINUTES)
 
 
 def _create_email_verification(user: User, db: Session) -> str:
@@ -176,10 +239,66 @@ def _create_email_verification(user: User, db: Session) -> str:
     db.commit()
     try:
         send_verification_email(user.email, user.name, code)
-    except Exception:
-        logger.exception("Could not deliver account verification email")
+    except HTTPException:
+        record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+        if record:
+            db.delete(record)
+            db.commit()
+        logger.error("Account verification email delivery failed.")
         raise
     return delivery_mode
+
+
+def _consume_auth_rate_limit(key: str, db: Session, limit: int, window_seconds: int) -> None:
+    now = datetime.now(timezone.utc)
+    db.query(AuthRateLimit).filter(
+        AuthRateLimit.window_started_at < now - timedelta(days=1)
+    ).delete(synchronize_session=False)
+    digest = hmac.new(_verification_secret(), key.encode(), hashlib.sha256).hexdigest()
+    record = db.get(AuthRateLimit, digest)
+    if record:
+        started = record.window_started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if (now - started).total_seconds() >= window_seconds:
+            record.window_started_at = now
+            record.attempts = 1
+        elif record.attempts >= limit:
+            raise HTTPException(429, "Too many requests. Wait before trying again.")
+        else:
+            record.attempts += 1
+    else:
+        db.add(AuthRateLimit(key_hash=digest, window_started_at=now, attempts=1))
+    db.commit()
+
+
+def _rate_limit_reset_request(request: Request, email: str, db: Session) -> None:
+    client_ip = request.client.host if request.client else "unknown"
+    _consume_auth_rate_limit(f"password-reset:ip:{client_ip}", db, RESET_RATE_LIMIT_MAX_REQUESTS, RESET_RATE_LIMIT_WINDOW_SECONDS)
+    _consume_auth_rate_limit(f"password-reset:email:{email}", db, 1, EMAIL_CODE_RESEND_SECONDS)
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _set_reset_cookies(response: Response, token: str) -> None:
+    secure = os.getenv("NETSENTRY_COOKIE_SECURE", "false").lower() == "true"
+    same_site = os.getenv("NETSENTRY_COOKIE_SAMESITE", "lax").lower()
+    if same_site not in {"lax", "strict", "none"}:
+        same_site = "lax"
+    age = PASSWORD_RESET_TOKEN_MINUTES * 60
+    response.set_cookie("netsentry_reset_token", token, httponly=True, secure=secure, samesite=same_site, path="/", max_age=age)
+    response.set_cookie("netsentry_reset_csrf", secrets.token_urlsafe(32), httponly=False, secure=secure, samesite=same_site, path="/", max_age=age)
+
+
+def _clear_reset_cookies(response: Response) -> None:
+    secure = os.getenv("NETSENTRY_COOKIE_SECURE", "false").lower() == "true"
+    same_site = os.getenv("NETSENTRY_COOKIE_SAMESITE", "lax").lower()
+    if same_site not in {"lax", "strict", "none"}:
+        same_site = "lax"
+    response.delete_cookie("netsentry_reset_token", httponly=True, secure=secure, samesite=same_site, path="/")
+    response.delete_cookie("netsentry_reset_csrf", secure=secure, samesite=same_site, path="/")
 
 
 def _enforce_resend_cooldown(user: User, db: Session) -> None:
@@ -237,7 +356,7 @@ def _issue_session(user: User, response: Response, db: Session) -> None:
 
 @router.post("/register", status_code=201)
 def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)):
-    name, email = payload.name.strip(), _normalize_gmail(payload.email)
+    name, email = payload.name.strip(), _normalize_email(payload.email)
     if not name:
         raise HTTPException(422, "Enter your name.")
     if not re.search(r"[a-z]", payload.password) or not re.search(r"[A-Z]", payload.password) or not re.search(r"\d", payload.password):
@@ -255,20 +374,20 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
         if existing and not existing.email_verified:
             _enforce_resend_cooldown(existing, db)
             delivery_mode = _create_email_verification(existing, db)
-            message = "A new code was written to the backend console for local development." if delivery_mode == "console" else "A new verification code has been sent to your email."
+            message = "A new verification code has been sent to your email."
             return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
         if existing:
             raise HTTPException(409, "An account with this email already exists.") from exc
         raise
     db.refresh(user)
     delivery_mode = _create_email_verification(user, db)
-    message = "A six-digit code was written to the backend console. Enter it here to finish local development signup." if delivery_mode == "console" else "Enter the six-digit code sent to your email to finish creating your account."
+    message = "Enter the six-digit code sent to your email to finish creating your account."
     return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
 
 
 @router.post("/verify-email")
 def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = Depends(get_db)):
-    email = _normalize_gmail(payload.email)
+    email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
     if not user:
         raise HTTPException(400, "This verification code is invalid or expired. Request a new code and try again.")
@@ -301,24 +420,138 @@ def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = 
 
 @router.post("/verification/resend", status_code=202)
 def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
-    email = _normalize_gmail(payload.email)
+    email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
     if user:
         _enforce_resend_cooldown(user, db)
         _create_email_verification(user, db)
-    return {"message": "If an unverified account exists, a code was sent. For local console mode, check the backend terminal."}
+    return {"message": "If an unverified account exists, a code was sent."}
 
 
 @router.post("/login")
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    email = _normalize_gmail(payload.email)
+    email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email).first()
-    if user and not user.email_verified:
-        raise HTTPException(403, "Verify your email before signing in. Check your inbox for the six-digit code.")
     if not user or not _password_matches(payload.password, user.password_hash):
         raise HTTPException(401, "Email or password is incorrect.")
+    if not user.is_active:
+        raise HTTPException(403, "This NetSentry account is unavailable.")
+    if not user.email_verified:
+        record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+        if not record:
+            _create_email_verification(user, db)
+            raise HTTPException(403, "Verify your email before signing in. A new code was sent to your inbox.")
+        raise HTTPException(403, "Verify your email before signing in. Check your inbox for the six-digit code.")
     _issue_session(user, response, db)
     return {"user": user_json(user)}
+
+
+RESET_GENERIC_MESSAGE = "If an active account matches that email, a password reset code will be sent."
+RESET_INVALID_MESSAGE = "The reset code is invalid or expired. Request a new code and try again."
+
+
+@router.post("/forgot-password", status_code=202)
+def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    email = _normalize_email(payload.email)
+    _rate_limit_reset_request(request, email, db)
+    _validate_email_delivery_config()
+    user = db.query(User).filter(User.email == email, User.email_verified.is_(True), User.is_active.is_(True)).first()
+    if user:
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        now = datetime.now(timezone.utc)
+        record = db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first()
+        if record:
+            record.code_hash = hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
+            record.expires_at = now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES)
+            record.created_at = now
+            record.attempts = 0
+            record.verified_at = None
+            record.reset_token_hash = None
+            record.reset_token_expires_at = None
+        else:
+            record = PasswordResetOtp(
+                user_id=user.id,
+                code_hash=hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest(),
+                expires_at=now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES),
+                created_at=now,
+                attempts=0,
+            )
+            db.add(record)
+        db.commit()
+        try:
+            send_password_reset_email(user.email, user.name, code)
+        except HTTPException:
+            db.delete(record)
+            db.commit()
+            logger.error("Password reset email delivery failed.")
+            raise
+    return {"message": RESET_GENERIC_MESSAGE}
+
+
+@router.post("/verify-reset-otp")
+def verify_reset_otp(payload: VerifyResetOtpRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    _consume_auth_rate_limit(
+        f"password-reset-verify:ip:{request.client.host if request.client else 'unknown'}",
+        db,
+        RESET_RATE_LIMIT_MAX_REQUESTS,
+        RESET_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    email = _normalize_email(payload.email)
+    user = db.query(User).filter(User.email == email, User.email_verified.is_(True), User.is_active.is_(True)).first()
+    record = db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first() if user else None
+    if not record or record.verified_at or _aware(record.expires_at) <= datetime.now(timezone.utc) or record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
+        raise HTTPException(400, RESET_INVALID_MESSAGE)
+    submitted = hmac.new(_verification_secret(), f"password-reset:{user.id}:{payload.code}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(submitted, record.code_hash):
+        record.attempts += 1
+        db.commit()
+        raise HTTPException(400, RESET_INVALID_MESSAGE)
+
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    record.code_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+    record.verified_at = now
+    record.reset_token_hash = hashlib.sha256(token.encode()).hexdigest()
+    record.reset_token_expires_at = now + timedelta(minutes=PASSWORD_RESET_TOKEN_MINUTES)
+    db.commit()
+    _set_reset_cookies(response, token)
+    return {"verified": True, "message": "Code verified. You can now choose a new password."}
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPasswordRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    _consume_auth_rate_limit(
+        f"password-reset-submit:ip:{request.client.host if request.client else 'unknown'}",
+        db,
+        RESET_RATE_LIMIT_MAX_REQUESTS,
+        RESET_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not re.search(r"[a-z]", payload.password) or not re.search(r"[A-Z]", payload.password) or not re.search(r"\d", payload.password):
+        raise HTTPException(422, "Password must include an uppercase letter, a lowercase letter, and a number.")
+    token = request.cookies.get("netsentry_reset_token", "")
+    csrf_cookie = request.cookies.get("netsentry_reset_csrf", "")
+    csrf_header = request.headers.get("x-csrf-token", "")
+    if not token or not csrf_cookie or not hmac.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(401, RESET_INVALID_MESSAGE)
+    record = db.query(PasswordResetOtp).filter(
+        PasswordResetOtp.reset_token_hash == hashlib.sha256(token.encode()).hexdigest(),
+        PasswordResetOtp.verified_at.is_not(None),
+    ).first()
+    if not record or not record.reset_token_expires_at or _aware(record.reset_token_expires_at) <= datetime.now(timezone.utc):
+        raise HTTPException(401, RESET_INVALID_MESSAGE)
+    user = db.get(User, record.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(401, RESET_INVALID_MESSAGE)
+    user.password_hash = _password_hash(payload.password)
+    now = datetime.now(timezone.utc)
+    db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update(
+        {UserSession.revoked_at: now},
+        synchronize_session=False,
+    )
+    db.delete(record)
+    db.commit()
+    _clear_reset_cookies(response)
+    return {"message": "Password reset successfully. Sign in with your new password."}
 
 
 @router.get("/google/config")
@@ -360,7 +593,7 @@ def login_with_google(payload: GoogleAuthRequest, request: Request, response: Re
     if claims.get("email_verified") is not True:
         raise HTTPException(403, "Google must verify your email address before you can sign in.")
 
-    email = _normalize_gmail(email if isinstance(email, str) else "")
+    email = _normalize_email(email if isinstance(email, str) else "")
     user = db.query(User).filter(User.google_subject == subject).first()
     if user and user.email != email:
         # Google subjects are stable; an email can change, but account identity remains the subject.

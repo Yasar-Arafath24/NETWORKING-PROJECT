@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from backend.app.api.auth_routes import get_current_user
 from backend.app.models.user import User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent, WebsiteSecurityAlert, WebsiteAlertStatusChange
-from backend.app.services.database import SessionLocal, get_db
+from backend.app.services.database import get_db
 from backend.app.services.website_detection import analyze_website_event
 
 router = APIRouter(prefix="/api/v1/websites", tags=["Website monitoring"])
@@ -123,6 +123,8 @@ def _connection_state(
         return "ERROR"
     if collector_status == "TOKEN_INVALID":
         return "TOKEN_INVALID"
+    if last_event is None:
+        return "WAITING_FOR_EVENTS"
     stale_seconds = 45
     if collector_last_seen:
         if collector_last_seen.tzinfo is None:
@@ -130,15 +132,11 @@ def _connection_state(
         collector_age = max(0.0, (now - collector_last_seen).total_seconds())
         if collector_status == "STOPPED" or collector_age > stale_seconds:
             return "DISCONNECTED"
-        if not last_event:
-            return "CONNECTED"
         if last_event.tzinfo is None:
             last_event = last_event.replace(tzinfo=timezone.utc)
         if max(0.0, (now - last_event).total_seconds()) <= min(15, stale_seconds):
             return "RECEIVING"
         return "CONNECTED"
-    if last_event is None:
-        return "NOT_CONFIGURED" if collector_status in {"UNKNOWN", "NOT_CONFIGURED"} else "WAITING_FOR_EVENTS"
     if last_event.tzinfo is None:
         last_event = last_event.replace(tzinfo=timezone.utc)
     age = max(0.0, (now - last_event).total_seconds())
@@ -160,9 +158,17 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         func.max(WebsiteTrafficEvent.created_at),
         func.sum(case((WebsiteTrafficEvent.severity == "HEURISTIC", 1), else_=0)),
         func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0),
-        func.avg(WebsiteTrafficEvent.duration_ms),
     ).filter(WebsiteTrafficEvent.site_id == site.id).one()
-    total_events, last_event, anomaly_count, response_bytes, average_duration = row
+    total_events, last_event, anomaly_count, response_bytes = row
+    duration_query = db.query(WebsiteTrafficEvent.duration_ms).filter(
+        WebsiteTrafficEvent.site_id == site.id,
+        or_(
+            WebsiteTrafficEvent.event_data["duration_measured"].as_boolean().is_(True),
+            WebsiteTrafficEvent.duration_ms > 0,
+        ),
+    )
+    duration_sample_count = duration_query.count()
+    average_duration = duration_query.with_entities(func.avg(WebsiteTrafficEvent.duration_ms)).scalar() or 0
     last_event_aware = last_event
     if last_event_aware and last_event_aware.tzinfo is None:
         last_event_aware = last_event_aware.replace(tzinfo=timezone.utc)
@@ -196,6 +202,7 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         "status_distribution": status_distribution,
         "response_bytes": int(response_bytes or 0),
         "average_duration_ms": round(float(average_duration or 0), 2),
+        "duration_sample_count": int(duration_sample_count),
         "source": "accepted_website_traffic_events",
     }
 
@@ -244,20 +251,27 @@ def list_websites(user: User = Depends(get_current_user), db: Session = Depends(
     if not sites:
         return {"websites": []}
     site_ids = [site.id for site in sites]
+    now = datetime.now(timezone.utc)
     rows = db.query(
         WebsiteTrafficEvent.site_id,
         func.count(WebsiteTrafficEvent.id),
         func.max(WebsiteTrafficEvent.created_at),
         func.sum(case((WebsiteTrafficEvent.severity == "HEURISTIC", 1), else_=0)),
+        func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0),
+        func.sum(case((WebsiteTrafficEvent.created_at >= now - timedelta(minutes=1), 1), else_=0)),
     ).filter(WebsiteTrafficEvent.site_id.in_(site_ids)).group_by(WebsiteTrafficEvent.site_id).all()
     stats = {site_id: {"total_events": int(count), "last_event_received": last_event,
-                       "anomaly_count": int(anomalies or 0)}
-             for site_id, count, last_event, anomalies in rows}
-    now = datetime.now(timezone.utc)
+                       "anomaly_count": int(anomalies or 0),
+                       "total_response_bytes": int(response_bytes or 0),
+                       "requests_per_minute": int(requests_per_minute or 0)}
+             for site_id, count, last_event, anomalies, response_bytes, requests_per_minute in rows}
     payloads = []
     for site in sites:
         data = _site_json(site)
-        site_stats = stats.get(site.id, {"total_events": 0, "last_event_received": None, "anomaly_count": 0})
+        site_stats = stats.get(site.id, {
+            "total_events": 0, "last_event_received": None, "anomaly_count": 0,
+            "total_response_bytes": 0, "requests_per_minute": 0,
+        })
         last_event = site_stats["last_event_received"]
         if last_event and last_event.tzinfo is None:
             last_event = last_event.replace(tzinfo=timezone.utc)
@@ -448,11 +462,49 @@ def list_website_events(
         func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0)
     ).scalar() or 0
     heuristic_count = base_query.filter(WebsiteTrafficEvent.severity == "HEURISTIC").count()
-    recent_since = datetime.now(timezone.utc) - timedelta(minutes=1)
+    now = datetime.now(timezone.utc)
+    recent_since = now - timedelta(minutes=1)
     recent_count = db.query(func.count(WebsiteTrafficEvent.id)).filter(
         WebsiteTrafficEvent.site_id == site_id,
         WebsiteTrafficEvent.created_at >= recent_since,
     ).scalar() or 0
+    duration_query = base_query.filter(or_(
+        WebsiteTrafficEvent.event_data["duration_measured"].as_boolean().is_(True),
+        WebsiteTrafficEvent.duration_ms > 0,
+    ))
+    duration_sample_count = duration_query.count()
+    average_duration = duration_query.with_entities(func.avg(WebsiteTrafficEvent.duration_ms)).scalar() or 0
+    successful_requests = base_query.filter(
+        WebsiteTrafficEvent.status_code >= 200,
+        WebsiteTrafficEvent.status_code < 300,
+    ).count()
+    client_errors = base_query.filter(
+        WebsiteTrafficEvent.status_code >= 400,
+        WebsiteTrafficEvent.status_code < 500,
+    ).count()
+    server_errors = base_query.filter(
+        WebsiteTrafficEvent.status_code >= 500,
+        WebsiteTrafficEvent.status_code < 600,
+    ).count()
+    dialect = db.get_bind().dialect.name
+    if dialect == "sqlite":
+        minute_bucket = func.strftime("%Y-%m-%dT%H:%M:00Z", WebsiteTrafficEvent.created_at)
+    else:
+        minute_bucket = func.date_trunc("minute", WebsiteTrafficEvent.created_at)
+    minute_rows = (
+        base_query.with_entities(minute_bucket, func.count(WebsiteTrafficEvent.id))
+        .group_by(minute_bucket)
+        .order_by(minute_bucket)
+        .all()
+    )
+    timeline = [
+        {
+            "minute": minute.isoformat() if hasattr(minute, "isoformat") else str(minute),
+            "count": int(count),
+        }
+        for minute, count in minute_rows
+        if minute is not None
+    ]
     return {
         "events": [_event_json(event) for event in events],
         "total": total,
@@ -463,8 +515,15 @@ def list_website_events(
             "requests_per_minute": recent_count,
             "response_bytes": int(traffic_bytes),
             "heuristic_flags": heuristic_count,
+            "anomaly_count": heuristic_count,
+            "successful_requests": successful_requests,
+            "client_errors": client_errors,
+            "server_errors": server_errors,
+            "average_duration_ms": round(float(average_duration), 2),
+            "duration_sample_count": int(duration_sample_count),
             "ml_status": "unavailable_incompatible_features",
             "status_distribution": status_distribution,
+            "requests_per_minute_timeline": timeline,
         },
     }
 
@@ -472,9 +531,13 @@ def list_website_events(
 def _event_json(event: WebsiteTrafficEvent) -> dict:
     received_at = event.created_at.isoformat()
     detection = event.event_data or {}
+    duration_measured = detection.get("duration_measured")
+    if duration_measured is None:
+        duration_measured = event.duration_ms > 0
     return {
         "id": event.id, "event_id": event.event_id, "path": event.request_path, "method": event.method, "status_code": event.status_code,
-        "duration_ms": event.duration_ms, "response_bytes": event.response_bytes, "source_ip": event.source_ip,
+        "duration_ms": event.duration_ms, "duration_measured": bool(duration_measured),
+        "response_bytes": event.response_bytes, "source_ip": event.source_ip,
         "user_agent": event.user_agent, "severity": event.severity, "reason": event.reason,
         "request_timestamp": event.request_timestamp.isoformat() if event.request_timestamp else received_at,
         "received_at": received_at,
@@ -588,6 +651,7 @@ async def ingest_website_event(
         "risk_severity": detection["severity"], "categories": detection["categories"],
         "reasons": detection["reasons"],
         "supporting_signals": detection.get("supporting_signals", []),
+        "duration_measured": "duration_ms" in item.model_fields_set,
     })
     event = WebsiteTrafficEvent(
         site_id=site.id, event_id=item.event_id, request_path=path, method=method, status_code=item.status_code,
@@ -806,7 +870,7 @@ async def _publish(site_id: int, payload: dict) -> None:
 
 
 @router.websocket("/{site_id}/live")
-async def website_live_socket(websocket: WebSocket, site_id: int):
+async def website_live_socket(websocket: WebSocket, site_id: int, db: Session = Depends(get_db)):
     allowed = {origin.strip() for origin in os.getenv("NETSENTRY_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")}
     if websocket.headers.get("origin") not in allowed:
         await websocket.close(code=1008)
@@ -815,7 +879,6 @@ async def website_live_socket(websocket: WebSocket, site_id: int):
     if not session_token:
         await websocket.close(code=1008)
         return
-    db = SessionLocal()
     try:
         token_hash = hashlib.sha256(session_token.encode()).hexdigest()
         session = db.query(UserSession).filter(

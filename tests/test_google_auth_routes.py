@@ -64,15 +64,24 @@ def test_google_creates_session_for_verified_gmail(google_client, monkeypatch):
 @pytest.mark.parametrize(
     ("claims", "status"),
     [
-        ({"email": "person@example.org", "email_verified": True}, 422),
         ({"email": "google-user@gmail.com", "email_verified": False}, 403),
+        ({"email": "not-an-email", "email_verified": True}, 422),
     ],
 )
-def test_google_rejects_non_gmail_or_unverified_claims(google_client, monkeypatch, claims, status):
+def test_google_rejects_invalid_or_unverified_email_claims(google_client, monkeypatch, claims, status):
     client, nonce, _ = google_client
     mock_claims(monkeypatch, nonce, **claims)
     response = client.post("/api/v1/auth/google", json={"credential": "x" * 120, "nonce": nonce})
     assert response.status_code == status
+
+
+def test_google_accepts_verified_workspace_email(google_client, monkeypatch):
+    client, nonce, _ = google_client
+    workspace_email = f"researcher-{uuid4().hex}@college.example.edu"
+    mock_claims(monkeypatch, nonce, email=workspace_email)
+    response = client.post("/api/v1/auth/google", json={"credential": "x" * 120, "nonce": nonce})
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["email"] == workspace_email
 
 
 def test_google_rejects_invalid_token_and_mismatched_nonce(google_client, monkeypatch):

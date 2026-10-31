@@ -20,7 +20,8 @@ running = True
 APACHE_RE = re.compile(
     r'^(?P<source_ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] '
     r'"(?P<method>[A-Z]+) (?P<path>[^ ]+) [^"]+" '
-    r'(?P<status_code>\d{3}) (?P<response_bytes>\d+|-)(?: .*?)?$'
+    r'(?P<status_code>\d{3}) (?P<response_bytes>\d+|-)'
+    r'(?:\s+(?P<duration_us>\d+(?:\.\d+)?))?(?:\s+.*)?$'
 )
 
 NGINX_RE = re.compile(
@@ -71,25 +72,20 @@ def normalize_event(data, parser=None, default_status=200):
     if not re.fullmatch(r"[A-Z]{1,12}", method):
         method = "GET"
 
-    def numeric(name, alternative_names=(), default=0):
-        value = data.get(name)
-        for alternative in alternative_names:
-            if value is None:
-                value = data.get(alternative)
-        try:
-            return float(value) if name == "duration_ms" else int(value)
-        except (TypeError, ValueError):
-            return default
-
     event = {
         "path": path,
         "method": method,
         "status_code": status_code,
-        "duration_ms": max(0, numeric("duration_ms", ("duration", "request_time_ms"))),
-        "response_bytes": max(0, numeric("response_bytes", ("bytes", "body_bytes_sent", "bytes_sent", "content_length"))),
+        "response_bytes": max(0, numeric_value(data, "response_bytes", ("bytes", "body_bytes_sent", "bytes_sent", "content_length"), integer=True)),
         "source_ip": str(data.get("source_ip", data.get("client_ip", data.get("remote_addr", ""))))[:64],
         "user_agent": str(data.get("user_agent", data.get("userAgent", data.get("http_user_agent", ""))))[:256],
     }
+    duration_value = data.get("duration_ms", data.get("duration", data.get("request_time_ms")))
+    if duration_value is not None:
+        try:
+            event["duration_ms"] = max(0, float(duration_value))
+        except (TypeError, ValueError):
+            pass
     event_id = data.get("event_id")
     if event_id:
         event["event_id"] = str(event_id)[:128]
@@ -111,19 +107,33 @@ def normalize_event(data, parser=None, default_status=200):
     return event
 
 
+def numeric_value(data, name, alternative_names=(), default=0, integer=False):
+    value = data.get(name)
+    for alternative in alternative_names:
+        if value is None:
+            value = data.get(alternative)
+    try:
+        return int(value) if integer else float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_apache_line(line):
     match = APACHE_RE.match(line.strip())
     if not match:
         return None
     values = match.groupdict()
-    return normalize_event({
+    data = {
         "source_ip": values["source_ip"],
         "request_timestamp": values["timestamp"],
         "method": values["method"],
         "path": values["path"],
         "status_code": values["status_code"],
         "response_bytes": 0 if values["response_bytes"] == "-" else values["response_bytes"],
-    }, parser="json")
+    }
+    if values["duration_us"] is not None:
+        data["duration_ms"] = float(values["duration_us"]) / 1000
+    return normalize_event(data, parser="json")
 
 
 def parse_nginx_line(line):
@@ -131,15 +141,16 @@ def parse_nginx_line(line):
     if not match:
         return None
     values = match.groupdict()
-    duration = float(values["duration_ms"]) * 1000 if values["duration_ms"] else 0
-    return normalize_event({
+    data = {
         "source_ip": values["source_ip"],
         "method": values["method"],
         "path": values["path"],
         "status_code": values["status_code"],
         "response_bytes": 0 if values["response_bytes"] == "-" else values["response_bytes"],
-        "duration_ms": duration,
-    }, parser="json")
+    }
+    if values["duration_ms"] is not None:
+        data["duration_ms"] = float(values["duration_ms"]) * 1000
+    return normalize_event(data, parser="json")
 
 
 def parse_iis_line(line):
@@ -166,16 +177,18 @@ def parse_iis_line(line):
         timestamp = None
         if values.get("date") and values.get("time"):
             timestamp = values["date"] + "T" + values["time"]
-        duration = values.get("time-taken", "0")
-        try:
-            duration = max(0, int(duration))
-        except ValueError:
-            duration = 0
-        return normalize_event({
+        event_data = {
             "source_ip": values.get("c-ip", ""), "method": values.get("cs-method", "GET"),
-            "path": path, "status_code": status, "duration_ms": duration,
+            "path": path, "status_code": status,
             "user_agent": values.get("cs(User-Agent)", ""), "request_timestamp": timestamp,
-        })
+        }
+        duration_value = values.get("time-taken")
+        if duration_value is not None:
+            try:
+                event_data["duration_ms"] = max(0, int(duration_value))
+            except ValueError:
+                pass
+        return normalize_event(event_data)
     match = IIS_RE.match(stripped)
     if not match:
         return None
@@ -245,6 +258,7 @@ def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_inte
         raise FileNotFoundError(f"Log file not found: {log_path}")
 
     position = 0 if from_beginning else log_path.stat().st_size
+    file_identity = None
     print(f"Watching {log_path} with the {parser} parser and sending events to site {site_id}", flush=True)
     last_heartbeat = 0.0
     send_collector_health(api_url, site_id, token, "RUNNING", timeout=timeout)
@@ -258,7 +272,12 @@ def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_inte
                 print(f"Collector heartbeat failed: {exc}", file=sys.stderr)
             last_heartbeat = now
         try:
-            size = log_path.stat().st_size
+            file_stat = log_path.stat()
+            identity = (file_stat.st_dev, file_stat.st_ino)
+            if file_identity is not None and identity != file_identity:
+                position = 0
+            file_identity = identity
+            size = file_stat.st_size
             if size < position:
                 position = 0
 
@@ -277,11 +296,13 @@ def tail_file(path, api_url, site_id, token, parser, timeout, retries, poll_inte
                         identity = f"{log_path.resolve()}:{file_stat.st_dev}:{file_stat.st_ino}:{line_offset}:{line.rstrip()}"
                         event.setdefault("event_id", hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest())
                         if not send_event(api_url, site_id, token, event, timeout, retries):
+                            log.seek(line_offset)
                             try:
                                 send_collector_health(api_url, site_id, token, "ERROR", timeout=timeout,
                                                       error="One or more traffic events could not be delivered. Check API reachability.")
                             except Exception as exc:
                                 print(f"Unable to report collector delivery error: {exc}", file=sys.stderr)
+                            break
                 position = log.tell()
         except FileNotFoundError:
             pass

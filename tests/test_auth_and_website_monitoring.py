@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.websockets import WebSocketDisconnect
 
 from backend.app.main import app
 from backend.app.api import website_routes
@@ -29,28 +31,28 @@ def _client_with_account(email=None):
 
 def test_website_collector_connection_state_uses_ingestion_age_and_revocation():
     now = datetime.now(timezone.utc)
-    assert website_routes._connection_state(True, None, now) == "NOT_CONFIGURED"
+    assert website_routes._connection_state(True, None, now) == "WAITING_FOR_EVENTS"
     assert website_routes._connection_state(True, now - timedelta(seconds=2), now) == "RECEIVING"
     assert website_routes._connection_state(True, now - timedelta(minutes=1), now) == "CONNECTED"
     assert website_routes._connection_state(True, now - timedelta(minutes=5), now) == "DISCONNECTED"
-    assert website_routes._connection_state(True, None, now, collector_status="RUNNING", collector_last_seen=now) == "CONNECTED"
+    assert website_routes._connection_state(True, None, now, collector_status="RUNNING", collector_last_seen=now) == "WAITING_FOR_EVENTS"
     assert website_routes._connection_state(True, None, now, collector_status="ERROR", collector_last_seen=now) == "ERROR"
     assert website_routes._connection_state(True, now - timedelta(seconds=2), now, collector_status="STOPPED", collector_last_seen=now) == "DISCONNECTED"
     assert website_routes._connection_state(False, now, now) == "DISCONNECTED"
     assert website_routes._connection_state(False, now, now, revoked_at=now) == "REVOKED"
 
 
-def test_registration_rejects_non_gmail_and_normalizes_gmail():
+def test_registration_accepts_organization_email_and_normalizes_address():
     client = TestClient(app)
     invalid = client.post("/api/v1/auth/register", json={
-        "name": "Monitor User", "email": "user@example.org", "password": "SecurePass1234",
+        "name": "Monitor User", "email": "not-an-email", "password": "SecurePass1234",
     })
     assert invalid.status_code == 422
     valid = register_and_verify(client, {
-        "name": "Monitor User", "email": f"  Monitor-{uuid4().hex}@GMAIL.COM  ", "password": "SecurePass1234",
+        "name": "Monitor User", "email": f"  Monitor-{uuid4().hex}@Engineering.Example.EDU  ", "password": "SecurePass1234",
     })
     assert valid.status_code == 200, valid.text
-    assert valid.json()["user"]["email"].endswith("@gmail.com")
+    assert valid.json()["user"]["email"].endswith("@engineering.example.edu")
 
 
 def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
@@ -84,11 +86,11 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         })
         assert duplicate.status_code == 409
         waiting = owner.get("/api/v1/websites").json()["websites"][0]
-        assert waiting["integration_status"] == "NOT_CONFIGURED"
+        assert waiting["integration_status"] == "WAITING_FOR_EVENTS"
         assert waiting["total_events"] == 0
         initial_connection = owner.get(f"/api/v1/websites/{website['id']}/status")
         assert initial_connection.status_code == 200
-        assert initial_connection.json()["status"] == "NOT_CONFIGURED"
+        assert initial_connection.json()["status"] == "WAITING_FOR_EVENTS"
         assert initial_connection.json()["verified"] is False
         empty_test = owner.post(f"/api/v1/websites/{website['id']}/test-connection")
         assert empty_test.status_code == 200
@@ -118,7 +120,7 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         assert running_health.status_code == 202
         assert running_health.json()["status"] == "RUNNING"
         connected_without_events = owner.get(f"/api/v1/websites/{website['id']}/status").json()
-        assert connected_without_events["status"] == "CONNECTED"
+        assert connected_without_events["status"] == "WAITING_FOR_EVENTS"
         assert connected_without_events["verified"] is False
         error_health = owner.post(health_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={"status": "ERROR", "error": "Log path denied"})
         assert error_health.status_code == 202
@@ -140,6 +142,8 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
                 "method": "GET", "path": path, "status_code": status,
                 "event_id": f"fixture-{path.lstrip('/').replace('/', '-')}",
                 "request_timestamp": "2026-10-29T10:00:00Z",
+                **({"duration_ms": 10} if status == 404 else {}),
+                "response_bytes": 2048 if status == 404 else 0,
             })
             assert response.status_code == 202, response.text
         duplicate_event = owner.post(event_url, headers={"Authorization": f"Bearer {website['ingest_token']}"}, json={
@@ -195,7 +199,10 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         assert listed_site["integration_status"] == "RECEIVING"
         assert listed_site["total_events"] == 5
         assert listed_site["anomaly_count"] == 2
+        assert listed_site["total_response_bytes"] == 2048
+        assert listed_site["requests_per_minute"] == 5
         assert listed_site["last_event_received"]
+        assert "ingest_token" not in listed_site
 
         tested_connection = owner.post(f"/api/v1/websites/{website['id']}/test-connection")
         assert tested_connection.status_code == 200
@@ -204,6 +211,10 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         assert tested_connection.json()["total_events"] == 5
         assert tested_connection.json()["anomaly_count"] == 2
         assert tested_connection.json()["requests_per_minute"] == 5
+        assert tested_connection.json()["response_bytes"] == 2048
+        assert tested_connection.json()["average_duration_ms"] == 10
+        assert tested_connection.json()["duration_sample_count"] == 1
+        assert tested_connection.json()["status_distribution"] == {"1xx": 0, "2xx": 2, "3xx": 0, "4xx": 2, "5xx": 1}
         assert other.get(f"/api/v1/websites/{website['id']}/status").status_code == 404
         assert other.post(f"/api/v1/websites/{website['id']}/test-connection").status_code == 404
 
@@ -225,6 +236,14 @@ def test_website_telemetry_is_owner_scoped_and_filterable(monkeypatch):
         assert data["events"][0]["detection_status"] == "unassessed"
         assert data["summary"]["status_distribution"]["4xx"] == 2
         assert data["summary"]["status_distribution"]["5xx"] == 1
+        assert data["summary"]["successful_requests"] == 2
+        assert data["summary"]["client_errors"] == 2
+        assert data["summary"]["server_errors"] == 1
+        assert data["summary"]["anomaly_count"] == 2
+        assert data["summary"]["response_bytes"] == 2048
+        assert data["summary"]["average_duration_ms"] == 10
+        assert data["summary"]["duration_sample_count"] == 1
+        assert data["summary"]["requests_per_minute_timeline"]
 
         owner_alerts = owner.get("/api/v1/monitoring/history/alerts").json()["alerts"]
         website_alerts = [alert for alert in owner_alerts if alert.get("event_type") == "website_traffic"]
@@ -348,6 +367,59 @@ def test_latest_analysis_and_live_history_are_private_to_the_owner():
         assert other.get("/api/v1/monitoring/history/flows").json()["flows"] == []
         assert len(owner.get("/api/v1/monitoring/history/alerts").json()["alerts"]) == 1
         assert other.get("/api/v1/monitoring/history/alerts").json()["alerts"] == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
+def test_website_live_socket_is_authenticated_scoped_and_publishes_stored_events():
+    website_routes._ingest_times.clear()
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def override_get_db():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        owner = _client_with_account()
+        other = _client_with_account()
+        created = owner.post("/api/v1/websites", json={
+            "name": "Socket test site",
+            "url": "https://socket.example.test",
+            "authorization_confirmed": True,
+        })
+        assert created.status_code == 201, created.text
+        website = created.json()
+        socket_path = f"/api/v1/websites/{website['id']}/live"
+        origin = {"origin": "http://localhost:5173"}
+
+        with pytest.raises(WebSocketDisconnect):
+            with other.websocket_connect(socket_path, headers=origin):
+                pass
+
+        with owner.websocket_connect(socket_path, headers=origin) as socket:
+            accepted = owner.post(
+                f"/api/v1/website-ingest/{website['id']}/events",
+                headers={"Authorization": f"Bearer {website['ingest_token']}"},
+                json={
+                    "event_id": "socket-event-1",
+                    "method": "GET",
+                    "path": "/real-request",
+                    "status_code": 200,
+                    "duration_ms": 14.5,
+                    "response_bytes": 2048,
+                    "source_ip": "203.0.113.12",
+                },
+            )
+            assert accepted.status_code == 202, accepted.text
+            message = socket.receive_json()
+            assert message["type"] == "traffic_event"
+            assert message["path"] == "/real-request"
+            assert message["status_code"] == 200
+            assert owner.get(f"/api/v1/websites/{website['id']}/status").json()["status"] == "RECEIVING"
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()

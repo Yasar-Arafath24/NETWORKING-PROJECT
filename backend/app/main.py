@@ -27,7 +27,7 @@ from backend.app.services.database import Base, engine
 from sqlalchemy import inspect, text
 from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
-from backend.app.models.user import EmailVerification, User, UserSession
+from backend.app.models.user import AuthRateLimit, EmailVerification, PasswordResetOtp, User, UserSession
 from backend.app.models.website_monitor import MonitoredWebsite, WebsiteTrafficEvent
 from backend.app.models.traffic_monitoring import AnalysisHistory, TrafficFlowRecord
 

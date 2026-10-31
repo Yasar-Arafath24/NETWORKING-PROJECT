@@ -56,6 +56,10 @@
   background: #fff;
 }
 .account-card input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .10); }
+.account-password-field { position: relative; display: block; }
+.account-password-field input { padding-right: 42px; }
+.account-password-toggle { position: absolute; top: 50%; right: 10px; display: grid; width: 28px; height: 28px; place-items: center; padding: 0; transform: translateY(-50%); border: 0; border-radius: 5px; color: #64748b; background: transparent; cursor: pointer; }
+.account-password-toggle:hover { color: #1d4ed8; background: #eff6ff; }
 .account-card small { display: block; color: #94a3b8; }
 .account-primary-button {
   display: flex;
@@ -89,6 +93,7 @@
 .account-switch { margin: 20px 0 0; color: #64748b; text-align: center; font-size: 13px; }
 .account-switch button { padding: 4px 2px; border: 0; color: #2563eb; background: none; font-weight: 700; cursor: pointer; transition: color .15s ease; }
 .account-switch button:hover:not(:disabled) { color: #1d4ed8; text-decoration: underline; }
+.account-forgot-link { margin: -7px 0 0; text-align: right; }
 .account-error { color: #dc2626; font-size: 13px; }
 .google-config-note,
 .google-help {
@@ -357,6 +362,8 @@
 .integration-setup-compact { display: grid; justify-items: start; gap: 9px; padding-top: 16px; margin-top: 16px; border-top: 1px solid #e2e8f0; }
 .integration-setup-compact p { margin: 0; color: #64748b; font-size: 11px; line-height: 1.5; }
 .integration-setup-compact code { overflow-wrap: anywhere; }
+.integration-setup-compact label { display: grid; width: min(100%, 620px); gap: 6px; color: #334155; font-size: 11px; font-weight: 600; }
+.integration-setup-compact input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #dbe3ee; border-radius: 7px; color: #1e293b; background: #fff; font: inherit; }
 .integration-setup-compact button { min-height: 34px; cursor: pointer; }
 .integration-notice { display: flex; justify-content: space-between; gap: 10px; padding: 11px 13px; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; background: #f0fdf4; font-size: 11px; }
 .integration-notice button { border: 0; color: inherit; background: none; font-size: 16px; cursor: pointer; }
@@ -2135,3 +2142,56 @@
 .status-receiving { color: #047857; background: #d1fae5; }
 .status-idle, .status-not_configured { color: #a16207; background: #fef3c7; }
 .status-revoked { color: #b91c1c; background: #fee2e2; }
+
+/* Website HTTP traffic monitoring */
+.traffic-monitoring-page { display: grid; gap: 16px; }
+.traffic-page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.traffic-page-actions button { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.traffic-website-selector { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 16px; }
+.traffic-website-selector > label { color: #64748b; font-size: 11px; font-weight: 700; }
+.traffic-website-selector select { min-width: 220px; max-width: min(440px, 100%); padding: 9px 10px; border: 1px solid #dbe3ee; border-radius: 7px; color: #1e293b; background: #fff; }
+.traffic-selected-website { display: grid; gap: 2px; min-width: 150px; margin-right: auto; }
+.traffic-selected-website strong { color: #0f172a; font-size: 12px; }
+.traffic-selected-website span { color: #64748b; font-size: 10px; overflow-wrap: anywhere; }
+.traffic-socket-state { display: inline-flex; align-items: center; padding: 5px 8px; border-radius: 20px; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.traffic-socket-connected { color: #15803d; background: #dcfce7; }
+.traffic-socket-reconnecting, .traffic-socket-connecting { color: #a16207; background: #fef3c7; }
+.traffic-socket-disconnected { color: #b91c1c; background: #fee2e2; }
+.traffic-socket-paused { color: #475569; background: #f1f5f9; }
+.traffic-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.traffic-metrics article { min-width: 0; gap: 7px; }
+.traffic-metrics article small { color: #64748b; font-size: 10px; }
+.traffic-metrics article strong { overflow-wrap: anywhere; font-size: 20px; }
+.traffic-chart { min-width: 0; }
+.traffic-chart .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.traffic-chart-content { width: 100%; height: 260px; margin-top: 12px; }
+.traffic-anomaly-panel > .panel-heading h2 { display: flex; align-items: center; gap: 7px; }
+.traffic-anomaly-list { display: grid; gap: 8px; }
+.traffic-anomaly-list article { display: grid; grid-template-columns: auto minmax(130px, 1fr) minmax(180px, 2fr) auto; align-items: center; gap: 10px; padding: 10px; border: 1px solid #fed7aa; border-radius: 8px; background: #fff7ed; font-size: 10px; }
+.traffic-anomaly-list code { overflow-wrap: anywhere; color: #334155; }
+.traffic-anomaly-list small { color: #64748b; }
+.traffic-classification { display: inline-flex; width: fit-content; padding: 4px 6px; border-radius: 5px; color: #475569; background: #f1f5f9; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.traffic-classification.suspicious, .traffic-classification.anomalous, .traffic-classification.heuristic { color: #b91c1c; background: #fee2e2; }
+.traffic-classification.normal { color: #15803d; background: #dcfce7; }
+.traffic-event-filters { grid-template-columns: minmax(180px, 2fr) repeat(4, minmax(120px, 1fr)); }
+.traffic-monitoring-page .website-event-table table { min-width: 1040px; }
+.traffic-monitoring-page .historical-pagination button { min-height: 32px; padding: 0 10px; cursor: pointer; }
+.traffic-monitoring-page .historical-pagination button:disabled { opacity: .45; cursor: not-allowed; }
+.status-waiting_for_events { color: #a16207; background: #fef3c7; }
+.status-token_invalid { color: #b91c1c; background: #fee2e2; }
+@media (max-width: 900px) {
+  .traffic-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .traffic-event-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .traffic-event-filters input { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .traffic-page-actions { width: 100%; }
+  .traffic-website-selector { align-items: stretch; }
+  .traffic-website-selector select { flex: 1 1 100%; min-width: 0; max-width: none; }
+  .traffic-selected-website { flex: 1 1 100%; }
+  .traffic-chart-content { height: 210px; }
+  .traffic-anomaly-list article { grid-template-columns: auto 1fr; }
+  .traffic-anomaly-list article > span:nth-child(3), .traffic-anomaly-list article > small { grid-column: 1 / -1; }
+  .traffic-event-filters { grid-template-columns: 1fr; }
+  .traffic-event-filters input { grid-column: auto; }
+}

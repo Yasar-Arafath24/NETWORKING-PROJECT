@@ -59,6 +59,22 @@ def test_website_rules_cover_normal_probe_scan_login_rate_errors_slow_method_and
             assert "server_error_burst" in server_errors["categories"]
             assert "not by itself an attack verdict" in next(r["message"] for r in server_errors["reasons"] if r["category"] == "server_error_burst")
 
+            for site_id, status, path, expected_category in (
+                (9, 404, "/missing", "client_error_burst"),
+                (10, 403, "/private", "auth_error_burst"),
+                (11, 429, "/limited", "rate_limit_burst"),
+                (12, 500, "/failure", "server_error_burst"),
+            ):
+                source_ip = f"192.0.2.{site_id}"
+                db.add_all([_event(site_id, path, status=status, source=source_ip) for _ in range(2)])
+                db.flush()
+                repeated_errors = analyze_website_event(
+                    db,
+                    site_id,
+                    WebsiteEventInput(path=path, status_code=status, source_ip=source_ip),
+                )
+                assert expected_category in repeated_errors["categories"]
+
             monkeypatch.setenv("NETSENTRY_WEBSITE_SLOW_MS", "1000")
             monkeypatch.setenv("NETSENTRY_WEBSITE_SLOW_REPEAT", "3")
             db.add_all([_event(6, "/slow", duration=1200) for _ in range(2)])

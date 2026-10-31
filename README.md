@@ -37,17 +37,22 @@ Then open the interactive docs at <http://127.0.0.1:8000/docs>.
 
 ## Accounts and private analysis history
 
-The frontend supports account registration and sign-in. Password signup sends a
-six-digit email verification code; verifying the code completes account creation
-and signs the user in. Codes expire after 10 minutes and are limited to five
-attempts. Configure `NETSENTRY_OTP_SECRET` (at least 32 random characters) and
-the `NETSENTRY_SMTP_*` settings from `.env.example` to deliver verification
-messages. For local testing only, `NETSENTRY_ENV=development` and
-`NETSENTRY_EMAIL_DELIVERY=console` writes the real code to the backend console.
-Console mode is only suitable for local testing; signup will attempt SMTP by
-default and will report missing SMTP configuration rather than claiming an email
-was sent. Keep SMTP delivery enabled for actual email. For Gmail SMTP, use an app password. Passwords must be at least six
-characters and include uppercase, lowercase, and numeric characters. Accounts
+The frontend supports account registration, sign-in, and password recovery.
+Signup sends a six-digit email verification code; codes expire after 10 minutes
+and are limited to five attempts. Password reset codes expire after five
+minutes, have a 60-second resend cooldown, and are limited to five attempts.
+Reset requests use generic responses to avoid revealing whether an email is
+registered. Codes are HMAC-hashed in the database and are never logged or
+returned to the browser. Configure `NETSENTRY_OTP_SECRET` (at least 32 random
+characters) and the `SMTP_*` settings from `.env.example` in the backend `.env`.
+Use an app password for Gmail SMTP (with 2-Step Verification enabled), never a
+user's Gmail account password. `SMTP_USE_TLS=true` configures STARTTLS, while
+`SMTP_USE_SSL=true` configures implicit TLS; configure exactly one. There is no
+console OTP mode. Passwords must be at least six characters and include
+uppercase, lowercase, and numeric characters; password reset requires at least
+eight. Gmail, Google Workspace, business, college, and other syntactically
+valid email domains are supported. Signup OTP and verified Google OAuth claims
+are used to verify ownership. Accounts
 and server-side sessions are stored in the configured SQLAlchemy database;
 passwords are stored as salted scrypt hashes. The frontend restores a valid
 HTTP-only session cookie automatically when it opens. New analysis reports are associated with the signed-in
@@ -55,13 +60,19 @@ user, and history/detail/latest-report endpoints only return that user's
 reports. Existing reports from before this change remain unassigned and are
 hidden from account dashboards.
 
+Forgot Password, OTP verification, and password reset use the existing
+`/api/v1/auth` API prefix. Successful reset revokes active sessions and the
+short-lived HttpOnly reset cookie is single-use. The backend creates the
+`password_reset_otps` and `auth_rate_limits` tables automatically on startup;
+no user-table migration is required.
+
 Sign in with Google uses Google Identity Services. The backend verifies each
 Google ID token with Google's `google-auth` library, checks its audience,
-signature, issuer, expiry, signed nonce, verified email, and Gmail-only policy,
+signature, issuer, expiry, signed nonce, and verified email,
 then issues the same NetSentry session cookie used by password sign-in.
 Verified Google identities are linked by Google's stable subject ID; a password
 account is linked only after Google cryptographically verifies control of its
-matching Gmail address. No Google client secret or ID token is stored.
+matching email address. No Google client secret or ID token is stored.
 
 To configure Google sign-in, create an OAuth client of type **Web application**
 in Google Cloud Console. Add `http://localhost:5173` and
@@ -72,7 +83,7 @@ environment; `.env.example` shows the local configuration keys. No client
 secret is required. Run the backend with `--env-file .env` locally, and set the
 same variable in the production backend's secret/environment settings.
 
-The Website Monitoring page lets each account register its authorized site,
+The Website Integrations page lets each account register its authorized site,
 create a private ingestion credential, and receive request events over an
 authenticated WebSocket. Install a server-side collector on the monitored
 site and POST JSON events to /api/v1/website-ingest/{site_id}/events with
@@ -136,7 +147,7 @@ process-wide capture worker permits only its owner to view that live session;
 persisted live flow records and alerts are owner-scoped. Legacy records without
 an owner are hidden.
 
-For Traffic Monitoring PCAP replay, use a path relative to the `datasets/`
+For PCAP replay, use a path relative to the `datasets/`
 folder, such as `samples/netsentry_sample.pcap`; paths prefixed with
 `datasets/` are also accepted. On Windows, live interface capture requires
 Npcap and appropriate capture permissions. PCAP replay does not require Npcap.
@@ -152,11 +163,13 @@ SQLite startup applies the additive columns and indexes automatically.
 The **Website Integrations** page reuses website registration, token rotation,
 event history, and alert APIs. `GET /api/v1/websites` returns per-owner event
 counts, anomaly counts, last successful event time, and an activity status.
-Connection state distinguishes `NOT_CONFIGURED`, `WAITING_FOR_EVENTS`,
+Connection state distinguishes `WAITING_FOR_EVENTS`,
 `CONNECTED`, `RECEIVING`, `DISCONNECTED`, `ERROR`, and `REVOKED`. A collector
 sends authenticated process heartbeats to
 `POST /api/v1/website-ingest/{site_id}/health`; this reports only the actual
-collector process state and never creates a traffic event. `GET
+collector process state and never creates a traffic event. A heartbeat alone
+does not mark a website connected; the first authenticated event must be
+accepted and stored. `GET
 /api/v1/websites/{site_id}/status` and `POST
 /api/v1/websites/{site_id}/test-connection` query accepted database events, so
 they verify traffic only after an authenticated event has been stored. Invalid
@@ -178,19 +191,19 @@ collector hosts.
 
 ## Traffic monitoring pages
 
-The workspace keeps three traffic views separate:
+The workspace keeps website HTTP events separate from network/PCAP records:
 
-- **Traffic Monitoring** reads owner-scoped saved PCAP analysis reports through
-  `GET /api/v1/monitoring/traffic-analytics`. It shows historical flow
-  statistics, protocol/IP/port breakdowns, report-time trends, and a searchable
-  paginated flow table. It does not start a capture.
-- **Real-Time Monitoring** owns Scapy interface capture and local PCAP replay.
-  Status, packet metadata, counters, rates, and detection summaries come from
-  the live-monitoring APIs. On Windows, live interface capture requires Npcap
+- **Traffic Monitoring** shows actual website access-log events accepted from
+  the selected owner's collector, including per-minute requests, HTTP status
+  metrics, response time/bytes, detection classifications, and stored anomaly
+  findings. It uses the authenticated website WebSocket and reconnects when the
+  connection is interrupted.
+- **Website Integrations** is the only page for registering websites, managing
+  collector keys, configuring log paths, and verifying real ingestion.
+- **PCAP Analysis** retains packet-capture upload and historical saved-flow
+  analytics. Scapy live capture and PCAP replay APIs remain separate from
+  website HTTP telemetry. On Windows, live interface capture requires Npcap
   and appropriate interface permissions; replay does not.
-- **Website Traffic** shows authorized website access-log telemetry delivered
-  by the configured collector. Adding a website URL alone does not grant access
-  to its visitor traffic or create telemetry.
 
 Historical charts use saved analysis timestamps because the existing PCAP
 reports retain flow summaries, not per-packet timestamps. The analytics API
@@ -288,4 +301,3 @@ returns 403 and should be classified by the heuristic detector; `/missing`
 returns 404. Then use **Test Connection** or **Refresh Status** in the wizard and
 open Website Traffic. Remote collectors must use a reachable public HTTPS API
 origin; the local `127.0.0.1` address is only for processes on the same computer.
-
