@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.main import app
 from backend.app.api import auth_routes
-from backend.app.models.user import AuthRateLimit
+from backend.app.models.user import AuthRateLimit, EmailVerification, User
 from backend.app.services.database import Base, get_db
 
 
@@ -225,6 +225,92 @@ def test_registration_explains_missing_smtp_configuration(monkeypatch):
     })
     assert response.status_code == 503
     assert "MAIL_HOST" in response.json()["detail"]
+
+
+def test_brevo_authentication_failure_is_actionable_without_credentials(monkeypatch, caplog):
+    class RejectingSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def starttls(self, **_kwargs):
+            pass
+
+        def login(self, *_args):
+            import smtplib
+
+            raise smtplib.SMTPAuthenticationError(525, b"credentials rejected")
+
+    monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
+    monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
+    monkeypatch.setenv("MAIL_HOST", "smtp-relay.brevo.com")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_USERNAME", "private-smtp-login")
+    monkeypatch.setenv("MAIL_PASSWORD", "private-smtp-key")
+    monkeypatch.setenv("MAIL_FROM", "verified@example.invalid")
+    monkeypatch.setenv("MAIL_STARTTLS", "true")
+    monkeypatch.setenv("MAIL_SSL_TLS", "false")
+
+    with patch("backend.app.api.auth_routes.smtplib.SMTP", RejectingSMTP):
+        with pytest.raises(HTTPException) as error:
+            auth_routes.send_verification_email(
+                "person@example.invalid", "Test User", "123456"
+            )
+
+    assert error.value.status_code == 503
+    assert "status 525" in error.value.detail
+    assert "newly generated Brevo SMTP key" in error.value.detail
+    assert "private-smtp-login" not in error.value.detail
+    assert "private-smtp-key" not in error.value.detail
+    assert "123456" not in caplog.text
+    assert "private-smtp-key" not in caplog.text
+
+
+def test_failed_registration_email_does_not_leave_unverified_user(monkeypatch):
+    monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
+    monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_FROM", "verify@netsentry.invalid")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def override_db():
+        with factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    email = f"failed-delivery-{uuid4().hex}@example.invalid"
+    try:
+        with patch(
+            "backend.app.api.auth_routes.send_verification_email",
+            side_effect=HTTPException(503, "SMTP authentication failed."),
+        ):
+            response = TestClient(app).post(
+                "/api/v1/auth/register",
+                json={
+                    "name": "Failed Delivery",
+                    "email": email,
+                    "password": "Aa1234",
+                },
+            )
+
+        assert response.status_code == 503
+        with factory() as db:
+            assert db.query(User).filter(User.email == email).first() is None
+            assert db.query(EmailVerification).count() == 0
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_gmail_requires_an_app_password(monkeypatch):

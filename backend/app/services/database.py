@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
@@ -64,29 +65,28 @@ def normalize_supabase_url(database_url: str) -> str:
     if not database_url.startswith(("postgresql://", "postgres://")):
         return database_url
 
-    project_ref = os.getenv("SUPABASE_PROJECT_REF", "sncvzdiebkpljsqwbxjk").strip().strip('"')
+    project_ref = os.getenv("SUPABASE_PROJECT_REF", "").strip().strip('"')
+    if not project_ref:
+        supabase_host = urlsplit(os.getenv("SUPABASE_URL", "").strip()).hostname or ""
+        if supabase_host.endswith(".supabase.co"):
+            project_ref = supabase_host.partition(".")[0]
     if not project_ref:
         return database_url
 
     if "pooler.supabase.com" not in database_url:
         return database_url
 
-    try:
-        prefix, remainder = database_url.split("://", 1)
-        userinfo, separator, host_and_database = remainder.partition("@")
-
-        if not separator:
-            return database_url
-
-        # Ensure pooling username format maps exactly to 'postgres.[PROJECT_REF]'
-        if ":" in userinfo:
-            username, password = userinfo.split(":", 1)
-            if username == "postgres":
-                userinfo = f"postgres.{project_ref}:{password}"
-
-        return f"{prefix}://{userinfo}@{host_and_database}"
-    except Exception:
+    prefix, remainder = database_url.split("://", 1)
+    userinfo, separator, host_and_database = remainder.partition("@")
+    if not separator:
         return database_url
+
+    if ":" in userinfo:
+        username, password = userinfo.split(":", 1)
+        if username == "postgres":
+            userinfo = f"postgres.{project_ref}:{password}"
+
+    return f"{prefix}://{userinfo}@{host_and_database}"
 
 
 DATABASE_URL = normalize_supabase_url(DATABASE_URL)

@@ -9,6 +9,9 @@ venv/
 .venv/
 env/
 ENV/
+.env
+.env.*
+!.env.example
 
 # ------------------------------------------
 # Python cache and compiled files

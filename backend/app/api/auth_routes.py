@@ -227,11 +227,27 @@ def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str
                     503,
                     "The SMTP server rejected the recipient address. Verify the email address and sender permissions.",
                 )
-    except smtplib.SMTPAuthenticationError:
-        logger.warning("SMTP authentication failed; verify the configured mail login and key.")
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.warning("SMTP server rejected authentication (SMTP status %s).", exc.smtp_code)
+        if host.lower() == "smtp-relay.brevo.com":
+            detail = (
+                f"Brevo rejected SMTP authentication (status {exc.smtp_code}). Set MAIL_USERNAME "
+                "to your Brevo SMTP login and MAIL_PASSWORD to a newly generated Brevo SMTP key "
+                "(not an API key), then restart the backend."
+            )
+        elif host.lower() in {"smtp.gmail.com", "smtp.googlemail.com"}:
+            detail = (
+                f"Gmail rejected SMTP authentication (status {exc.smtp_code}). Set MAIL_USERNAME "
+                "to the account email and MAIL_PASSWORD to its current Google App Password."
+            )
+        else:
+            detail = (
+                f"The SMTP server rejected authentication (status {exc.smtp_code}). "
+                "Verify the configured mail username and password."
+            )
         raise HTTPException(
             503,
-            "SMTP authentication failed. Verify MAIL_USERNAME and MAIL_PASSWORD; Brevo requires its SMTP login and SMTP key.",
+            detail,
         ) from None
     except (TimeoutError, ConnectionError) as exc:
         logger.warning("SMTP connection failed (%s).", type(exc).__name__)
@@ -436,7 +452,12 @@ def register(payload: RegisterRequest, request: Request, response: Response, db:
             raise HTTPException(409, "An account with this email already exists.") from exc
         raise
     db.refresh(user)
-    delivery_mode = _create_email_verification(user, db)
+    try:
+        delivery_mode = _create_email_verification(user, db)
+    except HTTPException:
+        db.delete(user)
+        db.commit()
+        raise
     message = "Enter the six-digit code sent to your email to finish creating your account."
     return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
 
