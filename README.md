@@ -38,17 +38,20 @@ Then open the interactive docs at <http://127.0.0.1:8000/docs>.
 ## Accounts and private analysis history
 
 The frontend supports account registration, sign-in, and password recovery.
-Signup sends a six-digit email verification code; codes expire after 10 minutes
+Signup sends a six-digit email verification code; codes expire after five minutes
 and are limited to five attempts. Password reset codes expire after five
 minutes, have a 60-second resend cooldown, and are limited to five attempts.
 Reset requests use generic responses to avoid revealing whether an email is
 registered. Codes are HMAC-hashed in the database and are never logged or
 returned to the browser. Configure `NETSENTRY_OTP_SECRET` (at least 32 random
-characters) and the `SMTP_*` settings from `.env.example` in the backend `.env`.
-Use an app password for Gmail SMTP (with 2-Step Verification enabled), never a
-user's Gmail account password. `SMTP_USE_TLS=true` configures STARTTLS, while
-`SMTP_USE_SSL=true` configures implicit TLS; configure exactly one. There is no
-console OTP mode. Passwords must be at least six characters and include
+characters) and the `MAIL_*` settings from `.env.example` in the backend `.env`.
+The default mail relay is Brevo (`smtp-relay.brevo.com:587`): set
+`MAIL_USERNAME` to the Brevo SMTP login, `MAIL_PASSWORD` to a Brevo SMTP key,
+and `MAIL_FROM` to a sender verified in Brevo. Set `MAIL_STARTTLS=true` and
+`MAIL_SSL_TLS=false` for STARTTLS. There is no
+console OTP mode. Send one explicit test email with
+`python scripts/test_brevo_smtp.py recipient@example.com`; this script does not
+run automatically when the backend starts. Passwords must be at least six characters and include
 uppercase, lowercase, and numeric characters; password reset requires at least
 eight. Gmail, Google Workspace, business, college, and other syntactically
 valid email domains are supported. Signup OTP and verified Google OAuth claims
@@ -140,8 +143,7 @@ configured automatically. For deployment, set NETSENTRY_DATABASE_URL,
 NETSENTRY_CORS_ORIGINS to the exact frontend origins, and
 NETSENTRY_COOKIE_SECURE=true behind HTTPS. For separate frontend/API origins, set
 NETSENTRY_COOKIE_SAMESITE=none (HTTPS and NETSENTRY_COOKIE_SECURE=true are required
-for browser SameSite=None cookies). Password reset and account deletion are not
-implemented yet. Authorized
+for browser SameSite=None cookies). Account deletion is not implemented yet. Authorized
 website records and telemetry are isolated by account. The existing
 process-wide capture worker permits only its owner to view that live session;
 persisted live flow records and alerts are owner-scoped. Legacy records without

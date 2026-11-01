@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from unittest.mock import patch
 import pytest
@@ -10,14 +11,15 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app.main import app
 from backend.app.api import auth_routes
+from backend.app.models.user import AuthRateLimit
 from backend.app.services.database import Base, get_db
 
 
 def test_signup_requires_email_code_then_restores_session(monkeypatch):
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "verify@netsentry.invalid")
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_FROM", "verify@netsentry.invalid")
     sent = {}
     email = f"otp-{uuid4().hex}@gmail.com"
     client = TestClient(app)
@@ -62,8 +64,8 @@ def test_signup_requires_email_code_then_restores_session(monkeypatch):
 def test_unverified_login_resends_code_only_after_password_verification(monkeypatch):
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "verify@netsentry.invalid")
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_FROM", "verify@netsentry.invalid")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -92,6 +94,9 @@ def test_unverified_login_resends_code_only_after_password_verification(monkeypa
             db.query(auth_routes.EmailVerification).filter(
                 auth_routes.EmailVerification.user_id == user.id
             ).delete()
+            db.query(AuthRateLimit).update(
+                {"window_started_at": datetime.now(timezone.utc) - timedelta(minutes=2)}
+            )
             db.commit()
 
         with patch("backend.app.api.auth_routes.send_verification_email") as send_email:
@@ -139,8 +144,8 @@ def test_unverified_login_resends_code_only_after_password_verification(monkeypa
 def test_signup_code_rejects_wrong_code_and_throttles_attempts(monkeypatch):
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "verify@netsentry.invalid")
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_FROM", "verify@netsentry.invalid")
     sent = {}
     email = f"otp-limit-{uuid4().hex}@gmail.com"
     client = TestClient(app)
@@ -207,6 +212,10 @@ def test_registration_explains_missing_smtp_configuration(monkeypatch):
     monkeypatch.setenv("NETSENTRY_ENV", "production")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
+    monkeypatch.delenv("MAIL_HOST", raising=False)
+    monkeypatch.delenv("MAIL_FROM", raising=False)
+    monkeypatch.delenv("MAIL_USERNAME", raising=False)
+    monkeypatch.delenv("MAIL_PASSWORD", raising=False)
     monkeypatch.delenv("SMTP_HOST", raising=False)
     monkeypatch.delenv("SMTP_FROM_EMAIL", raising=False)
     monkeypatch.delenv("NETSENTRY_SMTP_HOST", raising=False)
@@ -215,22 +224,22 @@ def test_registration_explains_missing_smtp_configuration(monkeypatch):
         "name": "SMTP Missing", "email": f"smtp-{uuid4().hex}@gmail.com", "password": "Aa1234",
     })
     assert response.status_code == 503
-    assert "SMTP_HOST" in response.json()["detail"]
+    assert "MAIL_HOST" in response.json()["detail"]
 
 
 def test_gmail_requires_an_app_password(monkeypatch):
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-secret-with-more-than-32-characters")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
-    monkeypatch.setenv("SMTP_PORT", "587")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "user@gmail.com")
-    monkeypatch.setenv("SMTP_USERNAME", "")
-    monkeypatch.setenv("SMTP_PASSWORD", "")
-    monkeypatch.setenv("SMTP_USE_TLS", "true")
-    monkeypatch.setenv("SMTP_USE_SSL", "false")
+    monkeypatch.setenv("MAIL_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_FROM", "user@gmail.com")
+    monkeypatch.setenv("MAIL_USERNAME", "")
+    monkeypatch.setenv("MAIL_PASSWORD", "")
+    monkeypatch.setenv("MAIL_STARTTLS", "true")
+    monkeypatch.setenv("MAIL_SSL_TLS", "false")
 
     with pytest.raises(HTTPException) as error:
         auth_routes._validate_email_delivery_config()
 
     assert error.value.status_code == 503
-    assert "SMTP_USERNAME and SMTP_PASSWORD" in error.value.detail
+    assert "MAIL_USERNAME and MAIL_PASSWORD" in error.value.detail

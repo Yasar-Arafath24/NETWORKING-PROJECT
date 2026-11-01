@@ -3,8 +3,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load the project's local environment file regardless of the shell's cwd.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+# Prefer backend/.env while retaining the existing repository-root .env setup.
+project_root = Path(__file__).resolve().parents[2]
+backend_env = project_root / "backend" / ".env"
+load_dotenv(backend_env if backend_env.is_file() else project_root / ".env")
 
 # Make local development usable without SMTP credentials. Production still
 # requires explicit verification configuration, so verification secrets and

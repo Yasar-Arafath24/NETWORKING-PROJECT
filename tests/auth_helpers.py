@@ -8,10 +8,10 @@ def register_and_verify(client, values):
     environment = {
         "NETSENTRY_OTP_SECRET": "test-only-secret-with-at-least-32-characters",
         "NETSENTRY_EMAIL_DELIVERY": "smtp",
-        "SMTP_HOST": "smtp.test.invalid",
-        "SMTP_FROM_EMAIL": "test@netsentry.invalid",
-        "SMTP_USE_TLS": "true",
-        "SMTP_USE_SSL": "false",
+        "MAIL_HOST": "smtp.test.invalid",
+        "MAIL_FROM": "test@netsentry.invalid",
+        "MAIL_STARTTLS": "true",
+        "MAIL_SSL_TLS": "false",
     }
     sent = {}
     with patch.dict(os.environ, environment, clear=False):

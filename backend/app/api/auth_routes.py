@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
+from html import escape
 import hashlib
 import hmac
 import logging
@@ -12,7 +13,7 @@ import ssl
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.models.user import AuthRateLimit, EmailVerification, PasswordResetOtp, User, UserSession
@@ -115,25 +116,32 @@ def _email_delivery_mode() -> str:
     return mode
 
 
-def _smtp_value(name: str, legacy_name: str, default: str = "") -> str:
+def _mail_value(name: str, smtp_name: str, legacy_name: str, default: str = "") -> str:
     value = os.getenv(name, "").strip()
+    if value:
+        return value
+    value = os.getenv(smtp_name, "").strip()
     return value or os.getenv(legacy_name, default).strip()
 
 
-def _smtp_password() -> str:
-    return os.getenv("SMTP_PASSWORD") or os.getenv("NETSENTRY_SMTP_PASSWORD", "")
+def _mail_password() -> str:
+    return (
+        os.getenv("MAIL_PASSWORD", "").strip()
+        or os.getenv("SMTP_PASSWORD", "").strip()
+        or os.getenv("NETSENTRY_SMTP_PASSWORD", "").strip()
+    )
 
 
 def _validate_email_delivery_config() -> str:
     _verification_secret()
     mode = _email_delivery_mode()
-    host = _smtp_value("SMTP_HOST", "NETSENTRY_SMTP_HOST")
-    sender = _smtp_value("SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
-    username = _smtp_value("SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
-    password = _smtp_password()
+    host = _mail_value("MAIL_HOST", "SMTP_HOST", "NETSENTRY_SMTP_HOST")
+    sender = _mail_value("MAIL_FROM", "SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
+    username = _mail_value("MAIL_USERNAME", "SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
+    password = _mail_password()
     missing = [
         variable
-        for variable, value in (("SMTP_HOST", host), ("SMTP_FROM_EMAIL", sender))
+        for variable, value in (("MAIL_HOST", host), ("MAIL_FROM", sender))
         if not value
     ]
     if missing:
@@ -142,33 +150,40 @@ def _validate_email_delivery_config() -> str:
             f"Email delivery is unavailable. Configure {', '.join(missing)} in the backend .env file.",
         )
     if bool(username) != bool(password):
-        raise HTTPException(503, "Configure both SMTP_USERNAME and SMTP_PASSWORD, or leave both blank.")
+        raise HTTPException(503, "Configure both MAIL_USERNAME and MAIL_PASSWORD.")
+    if host.lower() == "smtp-relay.brevo.com" and not username:
+        raise HTTPException(
+            503,
+            "Brevo SMTP requires MAIL_USERNAME and MAIL_PASSWORD. Use your Brevo SMTP login and SMTP key.",
+        )
     if host.lower() in {"smtp.gmail.com", "smtp.googlemail.com"} and not username:
         raise HTTPException(
             503,
-            "Gmail SMTP requires SMTP_USERNAME and SMTP_PASSWORD. Use the account email and a Google App Password.",
+            "Gmail SMTP requires MAIL_USERNAME and MAIL_PASSWORD. Use the account email and a Google App Password.",
         )
     try:
-        port = int(_smtp_value("SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
+        port = int(_mail_value("MAIL_PORT", "SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
     except ValueError as exc:
-        raise HTTPException(503, "SMTP_PORT must be a valid port number.") from exc
-    use_ssl = _smtp_value("SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
-    use_tls = _smtp_value("SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
+        raise HTTPException(503, "MAIL_PORT must be a valid port number.") from exc
+    use_ssl = _mail_value("MAIL_SSL_TLS", "SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
+    use_tls = _mail_value("MAIL_STARTTLS", "SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
     if not 1 <= port <= 65535 or (use_ssl and use_tls) or not (use_ssl or use_tls):
-        raise HTTPException(503, "Configure a valid SMTP port and exactly one of SMTP_USE_TLS or SMTP_USE_SSL.")
+        raise HTTPException(503, "Configure a valid mail port and exactly one of MAIL_STARTTLS or MAIL_SSL_TLS.")
+    if host.lower() == "smtp-relay.brevo.com" and (port != 587 or not use_tls or use_ssl):
+        raise HTTPException(503, "Brevo SMTP requires MAIL_PORT=587, MAIL_STARTTLS=true, and MAIL_SSL_TLS=false.")
     return mode
 
 
 def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str, expiration_minutes: int) -> None:
     _validate_email_delivery_config()
-    host = _smtp_value("SMTP_HOST", "NETSENTRY_SMTP_HOST")
-    sender = _smtp_value("SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
-    sender_name = _smtp_value("SMTP_FROM_NAME", "NETSENTRY_SMTP_FROM_NAME", "NetSentry AI")
-    username = _smtp_value("SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
-    password = _smtp_password()
-    port = int(_smtp_value("SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
-    use_ssl = _smtp_value("SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
-    use_tls = _smtp_value("SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
+    host = _mail_value("MAIL_HOST", "SMTP_HOST", "NETSENTRY_SMTP_HOST")
+    sender = _mail_value("MAIL_FROM", "SMTP_FROM_EMAIL", "NETSENTRY_SMTP_FROM")
+    sender_name = _mail_value("MAIL_FROM_NAME", "SMTP_FROM_NAME", "NETSENTRY_SMTP_FROM_NAME", "NetSentry AI")
+    username = _mail_value("MAIL_USERNAME", "SMTP_USERNAME", "NETSENTRY_SMTP_USERNAME")
+    password = _mail_password()
+    port = int(_mail_value("MAIL_PORT", "SMTP_PORT", "NETSENTRY_SMTP_PORT", "587"))
+    use_ssl = _mail_value("MAIL_SSL_TLS", "SMTP_USE_SSL", "NETSENTRY_SMTP_USE_SSL", "false").lower() == "true"
+    use_tls = _mail_value("MAIL_STARTTLS", "SMTP_USE_TLS", "NETSENTRY_SMTP_STARTTLS", "true").lower() == "true"
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = formataddr((sender_name, sender))
@@ -177,6 +192,27 @@ def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str
         f"Hello {name},\n\nYour NetSentry {purpose} code is {code}. "
         f"It expires in {expiration_minutes} minutes.\n\n"
         "If you did not request this code, you can ignore this message."
+    )
+    message.add_alternative(
+        f"""\
+<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:32px;background:#f3f6fb;font-family:Arial,sans-serif;color:#172033">
+    <table role="presentation" style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:32px">
+      <tr><td>
+        <p style="margin:0 0 24px;color:#2457d6;font-size:13px;font-weight:700;letter-spacing:1px">NETSENTRY AI</p>
+        <h1 style="margin:0 0 16px;font-size:24px">Your {escape(purpose)} code</h1>
+        <p style="margin:0 0 20px">Hello {escape(name)}, use this one-time code to continue:</p>
+        <p style="margin:0 0 20px;padding:16px;text-align:center;background:#f3f6fb;border-radius:10px;font-size:32px;font-weight:700;letter-spacing:8px">{escape(code)}</p>
+        <p style="margin:0 0 24px;color:#526078">This code expires in {expiration_minutes} minutes. Never share it with anyone.</p>
+        <hr style="border:0;border-top:1px solid #e5eaf2">
+        <p style="margin:16px 0 0;color:#6b7485;font-size:13px">If you did not request this code, you can safely ignore this email.</p>
+      </td></tr>
+    </table>
+  </body>
+</html>
+""",
+        subtype="html",
     )
     smtp_factory = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
     try:
@@ -191,21 +227,24 @@ def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str
                     503,
                     "The SMTP server rejected the recipient address. Verify the email address and sender permissions.",
                 )
-    except smtplib.SMTPAuthenticationError as exc:
+    except smtplib.SMTPAuthenticationError:
+        logger.warning("SMTP authentication failed; verify the configured mail login and key.")
         raise HTTPException(
             503,
-            "SMTP authentication failed. Verify SMTP_USERNAME and SMTP_PASSWORD; Gmail requires a Google App Password.",
-        ) from exc
+            "SMTP authentication failed. Verify MAIL_USERNAME and MAIL_PASSWORD; Brevo requires its SMTP login and SMTP key.",
+        ) from None
     except (TimeoutError, ConnectionError) as exc:
+        logger.warning("SMTP connection failed (%s).", type(exc).__name__)
         raise HTTPException(
             503,
-            "The SMTP connection timed out or failed. Check SMTP_HOST, SMTP_PORT, and TLS/SSL settings.",
-        ) from exc
+            "The SMTP connection timed out or failed. Check MAIL_HOST, MAIL_PORT, and TLS settings.",
+        ) from None
     except (OSError, smtplib.SMTPException) as exc:
+        logger.warning("SMTP delivery failed (%s).", type(exc).__name__)
         raise HTTPException(
             503,
-            "SMTP email delivery failed. Check the SMTP server, TLS/SSL settings, sender address, and try again.",
-        ) from exc
+            "SMTP email delivery failed. Check the mail server, TLS settings, sender address, and try again.",
+        ) from None
 
 
 def send_verification_email(email: str, name: str, code: str) -> None:
@@ -276,6 +315,22 @@ def _rate_limit_reset_request(request: Request, email: str, db: Session) -> None
     client_ip = request.client.host if request.client else "unknown"
     _consume_auth_rate_limit(f"password-reset:ip:{client_ip}", db, RESET_RATE_LIMIT_MAX_REQUESTS, RESET_RATE_LIMIT_WINDOW_SECONDS)
     _consume_auth_rate_limit(f"password-reset:email:{email}", db, 1, EMAIL_CODE_RESEND_SECONDS)
+
+
+def _rate_limit_email_verification(request: Request, email: str, db: Session) -> None:
+    client_ip = request.client.host if request.client else "unknown"
+    _consume_auth_rate_limit(
+        f"email-verification:ip:{client_ip}",
+        db,
+        RESET_RATE_LIMIT_MAX_REQUESTS,
+        RESET_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    _consume_auth_rate_limit(
+        f"email-verification:email:{email}",
+        db,
+        1,
+        EMAIL_CODE_RESEND_SECONDS,
+    )
 
 
 def _aware(value: datetime) -> datetime:
@@ -355,7 +410,7 @@ def _issue_session(user: User, response: Response, db: Session) -> None:
 
 
 @router.post("/register", status_code=201)
-def register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+def register(payload: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     name, email = payload.name.strip(), _normalize_email(payload.email)
     if not name:
         raise HTTPException(422, "Enter your name.")
@@ -364,6 +419,7 @@ def register(payload: RegisterRequest, response: Response, db: Session = Depends
     if len(payload.password) < 6:
         raise HTTPException(422, "Password must be at least 6 characters.")
     _validate_email_delivery_config()
+    _rate_limit_email_verification(request, email, db)
     user = User(name=name, email=email, password_hash=_password_hash(payload.password), email_verified=False)
     db.add(user)
     try:
@@ -399,6 +455,8 @@ def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = 
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
     if expiry <= now:
+        db.delete(record)
+        db.commit()
         raise HTTPException(400, "This verification code has expired. Request a new code.")
     if record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
         raise HTTPException(429, "Too many incorrect codes. Request a new code.")
@@ -419,8 +477,9 @@ def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = 
 
 
 @router.post("/verification/resend", status_code=202)
-def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+def resend_verification(payload: ResendVerificationRequest, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
+    _rate_limit_email_verification(request, email, db)
     user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
     if user:
         _enforce_resend_cooldown(user, db)
@@ -429,7 +488,7 @@ def resend_verification(payload: ResendVerificationRequest, db: Session = Depend
 
 
 @router.post("/login")
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email).first()
     if not user or not _password_matches(payload.password, user.password_hash):
@@ -438,7 +497,11 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(403, "This NetSentry account is unavailable.")
     if not user.email_verified:
         record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
-        if not record:
+        if not record or _aware(record.expires_at) <= datetime.now(timezone.utc):
+            if record:
+                db.delete(record)
+                db.commit()
+            _rate_limit_email_verification(request, email, db)
             _create_email_verification(user, db)
             raise HTTPException(403, "Verify your email before signing in. A new code was sent to your inbox.")
         raise HTTPException(403, "Verify your email before signing in. Check your inbox for the six-digit code.")
@@ -453,38 +516,43 @@ RESET_INVALID_MESSAGE = "The reset code is invalid or expired. Request a new cod
 @router.post("/forgot-password", status_code=202)
 def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
-    _rate_limit_reset_request(request, email, db)
     _validate_email_delivery_config()
-    user = db.query(User).filter(User.email == email, User.email_verified.is_(True), User.is_active.is_(True)).first()
-    if user:
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        now = datetime.now(timezone.utc)
-        record = db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first()
-        if record:
-            record.code_hash = hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
-            record.expires_at = now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES)
-            record.created_at = now
-            record.attempts = 0
-            record.verified_at = None
-            record.reset_token_hash = None
-            record.reset_token_expires_at = None
-        else:
-            record = PasswordResetOtp(
-                user_id=user.id,
-                code_hash=hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest(),
-                expires_at=now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES),
-                created_at=now,
-                attempts=0,
-            )
-            db.add(record)
-        db.commit()
-        try:
-            send_password_reset_email(user.email, user.name, code)
-        except HTTPException:
-            db.delete(record)
+    try:
+        _rate_limit_reset_request(request, email, db)
+        user = db.query(User).filter(User.email == email, User.email_verified.is_(True), User.is_active.is_(True)).first()
+        if user:
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            now = datetime.now(timezone.utc)
+            record = db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first()
+            if record:
+                record.code_hash = hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
+                record.expires_at = now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES)
+                record.created_at = now
+                record.attempts = 0
+                record.verified_at = None
+                record.reset_token_hash = None
+                record.reset_token_expires_at = None
+            else:
+                record = PasswordResetOtp(
+                    user_id=user.id,
+                    code_hash=hmac.new(_verification_secret(), f"password-reset:{user.id}:{code}".encode(), hashlib.sha256).hexdigest(),
+                    expires_at=now + timedelta(minutes=PASSWORD_RESET_OTP_MINUTES),
+                    created_at=now,
+                    attempts=0,
+                )
+                db.add(record)
             db.commit()
-            logger.error("Password reset email delivery failed.")
-            raise
+            try:
+                send_password_reset_email(user.email, user.name, code)
+            except HTTPException:
+                db.delete(record)
+                db.commit()
+                logger.error("Password reset email delivery failed.")
+                raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.error("Password reset request failed due to database error (%s).", type(exc).__name__)
+        raise HTTPException(503, "Password reset is temporarily unavailable due to a database error.") from None
     return {"message": RESET_GENERIC_MESSAGE}
 
 
@@ -499,7 +567,11 @@ def verify_reset_otp(payload: VerifyResetOtpRequest, request: Request, response:
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.email_verified.is_(True), User.is_active.is_(True)).first()
     record = db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first() if user else None
-    if not record or record.verified_at or _aware(record.expires_at) <= datetime.now(timezone.utc) or record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
+    if record and _aware(record.expires_at) <= datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise HTTPException(400, RESET_INVALID_MESSAGE)
+    if not record or record.verified_at or record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
         raise HTTPException(400, RESET_INVALID_MESSAGE)
     submitted = hmac.new(_verification_secret(), f"password-reset:{user.id}:{payload.code}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(submitted, record.code_hash):

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -40,14 +41,14 @@ def test_smtp_uses_configured_transport(monkeypatch, use_tls, use_ssl, factory_n
 
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-password-reset-secret-with-32-chars")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_PORT", "587")
-    monkeypatch.setenv("SMTP_USERNAME", "")
-    monkeypatch.setenv("SMTP_PASSWORD", "")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "security@netsentry.invalid")
-    monkeypatch.setenv("SMTP_FROM_NAME", "NetSentry Tests")
-    monkeypatch.setenv("SMTP_USE_TLS", use_tls)
-    monkeypatch.setenv("SMTP_USE_SSL", use_ssl)
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_USERNAME", "")
+    monkeypatch.setenv("MAIL_PASSWORD", "")
+    monkeypatch.setenv("MAIL_FROM", "security@netsentry.invalid")
+    monkeypatch.setenv("MAIL_FROM_NAME", "NetSentry Tests")
+    monkeypatch.setenv("MAIL_STARTTLS", use_tls)
+    monkeypatch.setenv("MAIL_SSL_TLS", use_ssl)
     smtp = FakeSMTP()
     constructor_args = {}
 
@@ -58,7 +59,8 @@ def test_smtp_uses_configured_transport(monkeypatch, use_tls, use_ssl, factory_n
     monkeypatch.setattr(auth_routes.smtplib, factory_name, create_smtp)
     auth_routes.send_password_reset_email("user@example.org", "Test User", "135790")
     assert smtp.started_tls is starttls_expected
-    assert "135790" in smtp.message.get_content()
+    assert "135790" in smtp.message.get_body(preferencelist=("plain",)).get_content()
+    assert "135790" in smtp.message.get_body(preferencelist=("html",)).get_content()
     assert smtp.message["From"] == "NetSentry Tests <security@netsentry.invalid>"
     assert ("context" in constructor_args) is (factory_name == "SMTP_SSL")
 
@@ -74,14 +76,14 @@ def _client(monkeypatch):
 
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-password-reset-secret-with-32-chars")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_PORT", "587")
-    monkeypatch.setenv("SMTP_USERNAME", "")
-    monkeypatch.setenv("SMTP_PASSWORD", "")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "security@netsentry.invalid")
-    monkeypatch.setenv("SMTP_FROM_NAME", "NetSentry Tests")
-    monkeypatch.setenv("SMTP_USE_TLS", "true")
-    monkeypatch.setenv("SMTP_USE_SSL", "false")
+    monkeypatch.setenv("MAIL_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_USERNAME", "")
+    monkeypatch.setenv("MAIL_PASSWORD", "")
+    monkeypatch.setenv("MAIL_FROM", "security@netsentry.invalid")
+    monkeypatch.setenv("MAIL_FROM_NAME", "NetSentry Tests")
+    monkeypatch.setenv("MAIL_STARTTLS", "true")
+    monkeypatch.setenv("MAIL_SSL_TLS", "false")
     app.dependency_overrides[get_db] = override_db
     return TestClient(app), factory, engine
 
@@ -142,6 +144,9 @@ def test_signup_otp_expires_after_five_minutes(monkeypatch):
         expired = client.post("/api/v1/auth/verify-email", json={"email": email, "code": code["value"]})
         assert expired.status_code == 400
         assert "expired" in expired.json()["detail"].lower()
+        with factory() as db:
+            user = db.query(User).filter(User.email == email).one()
+            assert db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first() is None
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
@@ -242,6 +247,9 @@ def test_reset_otp_expiry_and_attempt_limit(monkeypatch):
         expired = client.post("/api/v1/auth/verify-reset-otp", json={"email": email, "code": codes["value"]})
         assert expired.status_code == 400
         assert expired.json()["detail"] == auth_routes.RESET_INVALID_MESSAGE
+        with factory() as db:
+            user = db.query(User).filter(User.email == email).one()
+            assert db.query(PasswordResetOtp).filter(PasswordResetOtp.user_id == user.id).first() is None
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
@@ -283,19 +291,63 @@ def test_smtp_authentication_failure_is_actionable_without_leaking_credentials(m
 
     monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-password-reset-secret-with-32-chars")
     monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
-    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
-    monkeypatch.setenv("SMTP_PORT", "587")
-    monkeypatch.setenv("SMTP_USERNAME", "account@example.com")
-    monkeypatch.setenv("SMTP_PASSWORD", "private-test-app-password")
-    monkeypatch.setenv("SMTP_FROM_EMAIL", "security@example.com")
-    monkeypatch.setenv("SMTP_USE_TLS", "true")
-    monkeypatch.setenv("SMTP_USE_SSL", "false")
+    monkeypatch.setenv("MAIL_HOST", "smtp-relay.brevo.com")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_USERNAME", "account@example.com")
+    monkeypatch.setenv("MAIL_PASSWORD", "private-test-app-password")
+    monkeypatch.setenv("MAIL_FROM", "security@example.com")
+    monkeypatch.setenv("MAIL_STARTTLS", "true")
+    monkeypatch.setenv("MAIL_SSL_TLS", "false")
 
     with patch("backend.app.api.auth_routes.smtplib.SMTP", return_value=RejectingSMTP()):
         with pytest.raises(HTTPException) as error:
             auth_routes.send_password_reset_email("user@example.org", "Test User", "135790")
 
     assert error.value.status_code == 503
-    assert "Gmail requires a Google App Password" in error.value.detail
+    assert "Brevo requires its SMTP login and SMTP key" in error.value.detail
     assert "private-test-app-password" not in error.value.detail
     assert "account@example.com" not in error.value.detail
+
+
+def test_brevo_requires_smtp_login_key_and_starttls(monkeypatch):
+    monkeypatch.setenv("NETSENTRY_OTP_SECRET", "test-password-reset-secret-with-32-chars")
+    monkeypatch.setenv("NETSENTRY_EMAIL_DELIVERY", "smtp")
+    monkeypatch.setenv("MAIL_HOST", "smtp-relay.brevo.com")
+    monkeypatch.setenv("MAIL_PORT", "587")
+    monkeypatch.setenv("MAIL_USERNAME", "")
+    monkeypatch.setenv("MAIL_PASSWORD", "")
+    monkeypatch.setenv("MAIL_FROM", "verified@example.com")
+    monkeypatch.setenv("MAIL_STARTTLS", "true")
+    monkeypatch.setenv("MAIL_SSL_TLS", "false")
+
+    with pytest.raises(HTTPException) as error:
+        auth_routes._validate_email_delivery_config()
+    assert "Brevo SMTP requires MAIL_USERNAME and MAIL_PASSWORD" in error.value.detail
+
+    monkeypatch.setenv("MAIL_USERNAME", "brevo-login")
+    monkeypatch.setenv("MAIL_PASSWORD", "private-test-smtp-key")
+    monkeypatch.setenv("MAIL_PORT", "465")
+    with pytest.raises(HTTPException) as error:
+        auth_routes._validate_email_delivery_config()
+    assert "MAIL_PORT=587, MAIL_STARTTLS=true" in error.value.detail
+
+
+def test_forgot_password_reports_database_failure_without_details(monkeypatch, caplog):
+    client, _factory, engine = _client(monkeypatch)
+    try:
+        with patch(
+            "backend.app.api.auth_routes._rate_limit_reset_request",
+            side_effect=OperationalError("SELECT secret", {}, Exception("private database detail")),
+        ):
+            response = client.post(
+                "/api/v1/auth/forgot-password",
+                json={"email": "database-failure@example.org"},
+            )
+        assert response.status_code == 503
+        assert "database error" in response.json()["detail"].lower()
+        assert "private database detail" not in response.json()["detail"]
+        assert "private database detail" not in caplog.text
+        assert "OperationalError" in caplog.text
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
