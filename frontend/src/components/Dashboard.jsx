@@ -2490,3 +2490,4 @@ export default function Dashboard({ user = null, onSignOut }) {
     </div>
   );
 }
+
