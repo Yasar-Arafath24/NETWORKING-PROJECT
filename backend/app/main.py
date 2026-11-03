@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.history_routes import router as history_router
 from backend.app.api.auth_routes import router as auth_router
-from backend.app.api.website_routes import ingest_router as website_ingest_router, router as website_router
+from backend.app.api.website_routes import collector_router, ingest_router as website_ingest_router, router as website_router
 from backend.app.api.routes import health_check, router
 from backend.app.services.database import Base, engine
 from sqlalchemy import inspect, text
@@ -76,6 +76,9 @@ if "authorization_confirmed" not in website_columns:
 if "platform" not in website_columns:
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE monitored_websites ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'custom'"))
+if "description" not in website_columns:
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE monitored_websites ADD COLUMN description VARCHAR(1000) NOT NULL DEFAULT ''"))
 if "collector_revoked_at" not in website_columns:
     timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
     with engine.begin() as connection:
@@ -130,6 +133,7 @@ app.include_router(history_router)
 app.include_router(auth_router)
 app.include_router(website_router)
 app.include_router(website_ingest_router)
+app.include_router(collector_router)
 
 app.add_api_route(
     "/health",

@@ -159,7 +159,8 @@ Existing Supabase databases should apply migrations `002_website_request_timesta
 `005_email_verification.sql`, `006_website_platform.sql`,
 `007_website_security_alerts.sql`, `008_website_collector_revocation.sql`,
 `009_website_integration_onboarding.sql`, and
-`010_website_event_idempotency.sql` if they have not been applied already. Local
+`010_website_event_idempotency.sql`, `011_existing_table_repair.sql`, and
+`012_customer_website_description.sql` if they have not been applied already. Local
 SQLite startup applies the additive columns and indexes automatically.
 
 The **Website Integrations** page reuses website registration, token rotation,
@@ -191,6 +192,39 @@ send to `http://127.0.0.1:8000`; `http://localhost:5173` is the frontend only.
 Set `VITE_COLLECTOR_API_URL` to the public HTTPS backend origin for remote
 collector hosts.
 
+### Customer-side standalone agent
+
+Set `NETSENTRY_PUBLIC_API_URL` in the backend environment to the canonical
+public API origin (for example `https://api.example.com`, without an API path).
+Production package generation requires HTTPS; this is the destination embedded
+in the agent ZIP and cannot be selected by a customer. Apply
+`supabase/migrations/012_customer_website_description.sql` to existing Supabase
+databases before deploying the updated API; local databases receive the
+additive column automatically.
+
+In the dashboard, open **Connect Website**, register an authorized site, select
+its server-log format, and download the Windows or Linux agent ZIP. The ZIP
+contains only the existing standalone traffic collector, interactive launcher,
+selected OS installer, non-secret site configuration, and instructions. It
+does not contain backend/frontend code, database settings, or the one-time
+collector key.
+
+On the customer server, extract the ZIP outside the website directory. On
+Windows, run `.\install_windows.ps1` in PowerShell; on Linux, run
+`sh ./install_linux.sh`. The installer creates a separate NetSentry data
+directory without changing website files. Python 3.10+ is required. The agent
+prompts for the real readable access-log path and hides the one-time key while
+it is entered. The key is passed to the collector process and is not stored in
+the ZIP, config, or logs. The key must be entered again if the agent is
+restarted; automatic OS credential-manager storage and Windows/systemd service
+installation are not implemented yet.
+
+The customer must select an existing authorized access log; the package does
+not scan arbitrary paths or install a web-server plugin. NetSentry marks the
+site connected only after a real authenticated event has been accepted and
+stored. Browser JavaScript tracking and a WordPress plugin are not currently
+available, and are not represented as working integrations.
+
 ## Traffic monitoring pages
 
 The workspace keeps website HTTP events separate from network/PCAP records:
@@ -212,11 +246,11 @@ reports retain flow summaries, not per-packet timestamps. The analytics API
 limits its summary window to the latest 250 reports, and existing report data
 may retain only a bounded subset of flow rows.
 
-The setup wizard uses `scripts/generic_traffic_collector.py`, which accepts
+The collector uses `scripts/generic_traffic_collector.py`, which accepts
 `jsonl`, `apache`, `nginx`, and `iis` formats. IIS parsing follows its `#Fields:`
-header. Keep `NETSENTRY_INGEST_TOKEN` on the collector server, copy the collector
-script there, use an API origin reachable from that server, then generate a new
-request on the website after starting the collector to verify real ingestion.
+header. The standalone package launches this collector using the configured
+public API origin; the legacy direct script invocation remains supported for
+existing integrations.
 
 Run the frontend and backend from the repository root in separate PowerShell
 terminals:

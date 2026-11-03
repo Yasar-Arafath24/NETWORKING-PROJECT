@@ -17,6 +17,7 @@ class MonitoredWebsite(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    description: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
     platform: Mapped[str] = mapped_column(String(20), default="custom", nullable=False)
     integration_method: Mapped[str] = mapped_column(String(32), default="generic_jsonl", nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)

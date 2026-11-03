@@ -40,7 +40,7 @@ import FlowResults from "./FlowResults";
 import PcapUpload from "./PcapUpload";
 import WebsiteTrafficMonitoring from "./WebsiteTrafficMonitoring";
 import WebsiteAnomalyAnalytics from "./WebsiteAnomalyAnalytics";
-import WebsiteIntegrations from "./WebsiteIntegrations";
+import CustomerWebsiteIntegrations from "./CustomerWebsiteIntegrations";
 import HistoricalTrafficAnalytics from "./HistoricalTrafficAnalytics";
 
 import {
@@ -56,7 +56,8 @@ import {
 
 const navigation = [
   { label: "Dashboard", page: "Overview", icon: LayoutDashboard },
-  { label: "Website Integration", page: "Website Integrations", icon: Globe2 },
+  { label: "Connect Website", page: "Connect Website", icon: Globe2 },
+  { label: "My Websites", page: "My Websites", icon: Globe2 },
   { label: "Traffic Monitoring", page: "Traffic Monitoring", icon: Activity },
   { label: "PCAP Analysis", page: "PCAP Analysis", icon: FileSearch },
   { label: "Alerts", page: "Security Alerts", icon: Bell },
@@ -70,6 +71,8 @@ const preferenceNavigation = [
 
 const pagePaths = {
   Overview: "/dashboard",
+  "Connect Website": "/connect-website",
+  "My Websites": "/website-integration",
   "Website Integrations": "/website-integration",
   "Traffic Monitoring": "/traffic-monitoring",
   "PCAP Analysis": "/pcap-analysis",
@@ -1140,14 +1143,15 @@ export default function Dashboard({ user = null, onSignOut }) {
     return (
       <WebsiteTrafficMonitoring
         initialSiteId={activeWebsiteId}
-        onOpenIntegrations={() => navigateTo("Website Integrations")}
+        onOpenIntegrations={() => navigateTo("My Websites")}
       />
     );
   }
 
   function renderWebsiteIntegrations() {
     return (
-      <WebsiteIntegrations
+      <CustomerWebsiteIntegrations
+        initialView={activePage === "Connect Website" ? "connect" : "websites"}
         onOpenLiveMonitoring={(siteId) => {
           setActiveWebsiteId(siteId);
           navigateTo("Traffic Monitoring");
@@ -1630,7 +1634,8 @@ export default function Dashboard({ user = null, onSignOut }) {
       case "Traffic Monitoring":
         return renderTrafficMonitoring();
 
-      case "Website Integrations":
+      case "Connect Website":
+      case "My Websites":
         return renderWebsiteIntegrations();
 
       case "AI Detection":
@@ -1890,7 +1895,7 @@ export default function Dashboard({ user = null, onSignOut }) {
                 ["Overview", "Dashboard overview"],
                 ["PCAP Analysis", "Analyze traffic captures"],
                 ["Traffic Monitoring", "View live website requests"],
-                ["Website Integrations", "Manage website collectors"],
+                ["My Websites", "Manage website collectors"],
                 ["Analysis History", "Review saved reports"],
                 ["Settings", "Manage preferences"],
               ].map(([label], index) => (

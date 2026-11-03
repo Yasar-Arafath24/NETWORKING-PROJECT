@@ -3,15 +3,20 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import io
+import json
 import logging
 import os
+from pathlib import Path
 import re
 import secrets
 import threading
 import time
+import zipfile
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -25,18 +30,27 @@ from backend.app.services.website_detection import analyze_website_event
 
 router = APIRouter(prefix="/api/v1/websites", tags=["Website monitoring"])
 ingest_router = APIRouter(prefix="/api/v1/website-ingest", tags=["Website traffic ingestion"])
+collector_router = APIRouter(prefix="/api/v1/collectors", tags=["Website collectors"])
 _clients: dict[int, set[WebSocket]] = defaultdict(set)
 _ingest_times: dict[int, deque[float]] = defaultdict(deque)
 _ingest_lock = threading.Lock()
 _rotation_times: dict[int, deque[float]] = defaultdict(deque)
 _health_times: dict[int, deque[float]] = defaultdict(deque)
 logger = logging.getLogger(__name__)
-WEBSITE_PLATFORMS = ("custom", "nodejs", "python", "php", "wordpress", "nginx", "apache", "iis")
+WEBSITE_PLATFORMS = (
+    "custom_html", "php", "wordpress", "react", "nodejs", "other",
+    "custom", "python", "nginx", "apache", "iis",
+)
+PLATFORM_PATTERN = "^(custom_html|php|wordpress|react|nodejs|other|custom|python|nginx|apache|iis)$"
+METHOD_PATTERN = "^(generic_jsonl|nodejs_jsonl|fastapi_jsonl|php_jsonl|apache_access_log|nginx_access_log|iis_w3c_log)$"
 PLATFORM_METHODS = {
-    "custom": ("generic_jsonl",),
-    "nodejs": ("nodejs_jsonl",),
-    "python": ("fastapi_jsonl",),
-    "php": ("php_jsonl",),
+    "custom_html": ("generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "react": ("generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "other": ("generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "custom": ("generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "nodejs": ("nodejs_jsonl", "generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "python": ("fastapi_jsonl", "generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
+    "php": ("php_jsonl", "generic_jsonl", "apache_access_log", "nginx_access_log", "iis_w3c_log"),
     "wordpress": ("apache_access_log", "nginx_access_log"),
     "nginx": ("nginx_access_log",),
     "apache": ("apache_access_log",),
@@ -52,11 +66,119 @@ def _default_method(platform: str) -> str:
     return PLATFORM_METHODS.get(platform, PLATFORM_METHODS["custom"])[0]
 
 
+def _collector_api_origin(request: Request) -> str:
+    configured = os.getenv("NETSENTRY_PUBLIC_API_URL", "").strip()
+    environment = os.getenv("NETSENTRY_ENV", "development").strip().lower()
+    if not configured:
+        host = request.url.hostname
+        if environment == "development" and host and host.lower() in {"localhost", "127.0.0.1", "::1", "testserver"}:
+            configured = str(request.base_url).rstrip("/")
+        else:
+            raise HTTPException(503, "Configure NETSENTRY_PUBLIC_API_URL to the canonical public API origin.")
+    try:
+        parsed = urlsplit(configured)
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(503, "NETSENTRY_PUBLIC_API_URL is invalid.") from exc
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not parsed.hostname
+        or (port is not None and not 1 <= port <= 65535)
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or (
+            parsed.scheme != "https"
+            and not (
+                environment == "development"
+                and parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1", "testserver"}
+            )
+        )
+    ):
+        raise HTTPException(503, "The agent API origin must use HTTPS. HTTP is allowed only for a local development origin.")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+@collector_router.get("/{site_id}/agent-package")
+def download_collector_package(
+    site_id: int,
+    request: Request,
+    target_os: str = Query(default="windows", alias="os", pattern="^(windows|linux)$"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    site = _owned_site(db, site_id, user.id)
+    api_origin = _collector_api_origin(request)
+    root = Path(__file__).resolve().parents[3]
+    collector_path = root / "scripts" / "generic_traffic_collector.py"
+    agent_path = root / "scripts" / "netsentry_agent.py"
+    readme_path = root / "scripts" / "agent_package" / "README.txt"
+    guide_path = root / "scripts" / "agent_package" / "INSTALLATION_GUIDE.md"
+    troubleshooting_path = root / "scripts" / "agent_package" / "TROUBLESHOOTING.md"
+    installer_name = "install_windows.ps1" if target_os == "windows" else "install_linux.sh"
+    installer_path = root / "scripts" / "agent_package" / installer_name
+    if not all(path.is_file() for path in (
+        collector_path, agent_path, installer_path, readme_path, guide_path, troubleshooting_path,
+    )):
+        logger.error("Collector package files are unavailable for site_id=%s.", site_id)
+        raise HTTPException(503, "The standalone collector package is temporarily unavailable.")
+    config = {
+        "site_id": site.id,
+        "api_url": api_origin,
+        "platform": site.platform,
+        "integration_method": site.integration_method,
+        "log_format": METHOD_FORMATS.get(site.integration_method, "jsonl"),
+    }
+    api_origin_notice = (
+        "This is a local-development address. It only works when the agent and API run on the same computer. "
+        "Ask your NetSentry administrator for a package configured with the deployed public HTTPS API origin "
+        "before installing on a separate customer server."
+        if urlsplit(api_origin).hostname in {"localhost", "127.0.0.1", "::1", "testserver"}
+        else "Production packages should use the organization's canonical public HTTPS API address."
+    )
+    buffer = io.BytesIO()
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+        for placeholder, value in {
+            "@WEBSITE_NAME@": site.name,
+            "@SITE_ID@": str(site.id),
+            "@PLATFORM@": site.platform,
+            "@API_ORIGIN@": api_origin,
+            "@LOG_FORMAT@": config["log_format"],
+            "@API_ORIGIN_NOTICE@": api_origin_notice,
+            "@INSTALLER_FILE@": installer_name,
+        }.items():
+            readme = readme.replace(placeholder, value)
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(collector_path, "generic_traffic_collector.py")
+            archive.write(agent_path, "netsentry_agent.py")
+            archive.write(installer_path, installer_name)
+            archive.writestr("config.json", json.dumps(config, indent=2) + "\n")
+            archive.writestr("README.txt", readme)
+            archive.write(guide_path, "INSTALLATION_GUIDE.md")
+            archive.write(troubleshooting_path, "TROUBLESHOOTING.md")
+    except (OSError, KeyError):
+        logger.exception("Could not assemble collector package for site_id=%s.", site_id)
+        raise HTTPException(503, "The standalone collector package could not be assembled.")
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="netsentry-{site_id}-{target_os}.zip"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 class WebsiteCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     url: str = Field(min_length=8, max_length=2048)
-    platform: str = Field(default="custom", pattern="^(custom|nodejs|python|php|wordpress|nginx|apache|iis)$")
-    integration_method: str | None = Field(default=None, pattern="^(generic_jsonl|nodejs_jsonl|fastapi_jsonl|php_jsonl|apache_access_log|nginx_access_log|iis_w3c_log)$")
+    description: str = Field(default="", max_length=1000)
+    platform: str = Field(default="custom_html", pattern="^(custom_html|php|wordpress|react|nodejs|other|custom|python|nginx|apache|iis)$")
+    integration_method: str | None = Field(default=None, pattern=METHOD_PATTERN)
     authorization_confirmed: bool
 
 
@@ -85,6 +207,7 @@ class WebsiteAlertStatusInput(BaseModel):
 def _site_json(site: MonitoredWebsite, *, token: str | None = None) -> dict:
     payload = {
         "id": site.id, "name": site.name, "url": site.url,
+        "description": getattr(site, "description", ""),
         "platform": getattr(site, "platform", "custom"),
         "integration_method": getattr(site, "integration_method", "generic_jsonl"),
         "enabled": site.enabled, "collector_revoked": bool(site.collector_revoked_at),
@@ -104,6 +227,18 @@ def _owned_site(db: Session, site_id: int, user_id: int) -> MonitoredWebsite:
     if not site:
         raise HTTPException(404, "Website monitor not found.")
     return site
+
+
+def _collector_token_matches(site: MonitoredWebsite | None, authorization: str | None) -> bool:
+    if not site or not site.enabled or site.collector_revoked_at or not authorization:
+        return False
+    header_value = authorization.strip()
+    scheme, separator, credential = header_value.partition(" ")
+    supplied = credential.strip() if separator and scheme.lower() == "bearer" else header_value
+    if not supplied:
+        return False
+    supplied_hash = hashlib.sha256(supplied.encode()).hexdigest()
+    return hmac.compare_digest(supplied_hash, site.token_hash)
 
 
 def _connection_state(
@@ -158,8 +293,12 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         func.max(WebsiteTrafficEvent.created_at),
         func.sum(case((WebsiteTrafficEvent.severity == "HEURISTIC", 1), else_=0)),
         func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0),
+        func.sum(case((
+            WebsiteTrafficEvent.event_data["classification"].as_string().in_(("SUSPICIOUS", "ANOMALOUS")),
+            1,
+        ), else_=0)),
     ).filter(WebsiteTrafficEvent.site_id == site.id).one()
-    total_events, last_event, anomaly_count, response_bytes = row
+    total_events, last_event, anomaly_count, response_bytes, suspicious_count = row
     duration_query = db.query(WebsiteTrafficEvent.duration_ms).filter(
         WebsiteTrafficEvent.site_id == site.id,
         or_(
@@ -182,8 +321,11 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         func.count(WebsiteTrafficEvent.id),
     ).filter(WebsiteTrafficEvent.site_id == site.id).group_by(WebsiteTrafficEvent.status_code).all()
     status_distribution = {"1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+    http_403_responses = 0
     for status_code, count in status_rows:
         status_distribution[f"{status_code // 100}xx"] += count
+        if status_code == 403:
+            http_403_responses = int(count)
     return {
         "site_id": site.id,
         "status": _connection_state(site.enabled, last_event_aware, now, site.collector_revoked_at,
@@ -192,8 +334,11 @@ def _website_connection_status(db: Session, site: MonitoredWebsite) -> dict:
         "verified": bool(total_events),
         "total_events": int(total_events or 0),
         "anomaly_count": int(anomaly_count or 0),
+        "suspicious_requests": int(suspicious_count or 0),
+        "blocked_requests": None,
+        "http_403_responses": http_403_responses,
         "last_event_received": last_event_aware.isoformat() if last_event_aware else None,
-        "collector_last_seen": last_event_aware.isoformat() if last_event_aware else None,
+        "collector_last_seen": site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None,
         "collector_last_seen_at": site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None,
         "collector_process_status": site.collector_status,
         "latest_ingestion_error": site.collector_last_error or None,
@@ -235,7 +380,8 @@ def add_website(payload: WebsiteCreate, user: User = Depends(get_current_user), 
         raise HTTPException(422, "Choose an integration method supported by the selected platform.")
     _check_token_operation_rate(user.id)
     token = secrets.token_urlsafe(36)
-    site = MonitoredWebsite(name=name, url=normalized_url, platform=payload.platform,
+    site = MonitoredWebsite(name=name, url=normalized_url, description=payload.description.strip(),
+                            platform=payload.platform,
                             integration_method=method, token_hash=hashlib.sha256(token.encode()).hexdigest(),
                             owner_id=user.id, authorization_confirmed=True,
                             collector_status="NOT_CONFIGURED")
@@ -259,17 +405,26 @@ def list_websites(user: User = Depends(get_current_user), db: Session = Depends(
         func.sum(case((WebsiteTrafficEvent.severity == "HEURISTIC", 1), else_=0)),
         func.coalesce(func.sum(WebsiteTrafficEvent.response_bytes), 0),
         func.sum(case((WebsiteTrafficEvent.created_at >= now - timedelta(minutes=1), 1), else_=0)),
+        func.sum(case((WebsiteTrafficEvent.status_code == 403, 1), else_=0)),
+        func.sum(case((
+            WebsiteTrafficEvent.event_data["classification"].as_string().in_(("SUSPICIOUS", "ANOMALOUS")),
+            1,
+        ), else_=0)),
     ).filter(WebsiteTrafficEvent.site_id.in_(site_ids)).group_by(WebsiteTrafficEvent.site_id).all()
     stats = {site_id: {"total_events": int(count), "last_event_received": last_event,
                        "anomaly_count": int(anomalies or 0),
+                       "suspicious_requests": int(suspicious or 0),
+                       "blocked_requests": None,
                        "total_response_bytes": int(response_bytes or 0),
-                       "requests_per_minute": int(requests_per_minute or 0)}
-             for site_id, count, last_event, anomalies, response_bytes, requests_per_minute in rows}
+                       "requests_per_minute": int(requests_per_minute or 0),
+                       "http_403_responses": int(http_403 or 0)}
+             for site_id, count, last_event, anomalies, response_bytes, requests_per_minute, http_403, suspicious in rows}
     payloads = []
     for site in sites:
         data = _site_json(site)
         site_stats = stats.get(site.id, {
             "total_events": 0, "last_event_received": None, "anomaly_count": 0,
+            "suspicious_requests": 0, "blocked_requests": None, "http_403_responses": 0,
             "total_response_bytes": 0, "requests_per_minute": 0,
         })
         last_event = site_stats["last_event_received"]
@@ -279,7 +434,7 @@ def list_websites(user: User = Depends(get_current_user), db: Session = Depends(
                                    site.collector_status, site.collector_last_seen_at)
         data.update(site_stats)
         data["last_event_received"] = last_event.isoformat() if last_event else None
-        data["collector_last_seen"] = last_event.isoformat() if last_event else None
+        data["collector_last_seen"] = site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None
         data["collector_last_seen_at"] = site.collector_last_seen_at.isoformat() if site.collector_last_seen_at else None
         data["collector_process_status"] = site.collector_status
         data["latest_ingestion_error"] = site.collector_last_error or None
@@ -323,8 +478,8 @@ def test_website_connection(
 async def set_website_enabled(
     site_id: int,
     enabled: bool | None = None,
-    platform: str | None = Query(default=None, pattern="^(custom|nodejs|python|php|wordpress|nginx|apache|iis)$"),
-    integration_method: str | None = Query(default=None, pattern="^(generic_jsonl|nodejs_jsonl|fastapi_jsonl|php_jsonl|apache_access_log|nginx_access_log|iis_w3c_log)$"),
+    platform: str | None = Query(default=None, pattern=PLATFORM_PATTERN),
+    integration_method: str | None = Query(default=None, pattern=METHOD_PATTERN),
     user: User = Depends(get_current_user), db: Session = Depends(get_db),
 ):
     site = _owned_site(db, site_id, user.id)
@@ -610,11 +765,8 @@ async def ingest_website_event(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
     site = db.query(MonitoredWebsite).filter_by(id=site_id).first()
-    if not site or not site.enabled or not supplied or not hmac.compare_digest(
-        hashlib.sha256(supplied.encode()).hexdigest(), site.token_hash
-    ):
+    if not _collector_token_matches(site, authorization):
         raise HTTPException(401, detail={"code": "TOKEN_INVALID", "message": "Collector token is invalid, revoked, or does not belong to this website."})
     path = item.path.split("?", 1)[0].split("#", 1)[0]
     path = path if path.startswith("/") and not path.startswith("//") else "/"
@@ -714,11 +866,8 @@ def report_collector_health(
     db: Session = Depends(get_db),
 ):
     """Accept an authenticated process heartbeat; it never creates traffic events."""
-    supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
     site = db.query(MonitoredWebsite).filter_by(id=site_id).first()
-    if not site or not site.enabled or site.collector_revoked_at or not supplied or not hmac.compare_digest(
-        hashlib.sha256(supplied.encode()).hexdigest(), site.token_hash
-    ):
+    if not _collector_token_matches(site, authorization):
         raise HTTPException(401, "Invalid website ingestion credential.")
     if not _allow_health(site.id):
         raise HTTPException(429, "Collector health update rate limit exceeded.")

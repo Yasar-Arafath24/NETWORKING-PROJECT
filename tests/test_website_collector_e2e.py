@@ -2,6 +2,9 @@ import json
 import socket
 import threading
 import time
+import zipfile
+from io import BytesIO
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -19,10 +22,9 @@ from backend.app.api import website_routes
 from backend.app.main import app
 from backend.app.services.database import Base, get_db
 from scripts import generic_traffic_collector as collector
-from tests.auth_helpers import register_and_verify
 
 
-def test_real_local_http_log_collector_ingestion_detection_and_isolation(tmp_path: Path):
+def test_real_local_http_log_collector_ingestion_detection_and_isolation(tmp_path: Path, monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -76,20 +78,96 @@ def test_real_local_http_log_collector_ingestion_detection_and_isolation(tmp_pat
         assert api_server.started, "test FastAPI server did not start"
     
         owner = TestClient(app)
-        verified = register_and_verify(owner, {
-            "name": "E2E owner", "email": f"e2e-{uuid4().hex}@gmail.com", "password": "SecurePass1234",
+        owner_otp = {}
+        owner_email = f"e2e-{uuid4().hex}@gmail.com"
+        with patch(
+            "backend.app.api.auth_routes.send_verification_email",
+            side_effect=lambda _email, _name, code: owner_otp.update(code=code),
+        ):
+            registered = owner.post("/api/v1/auth/register", json={
+                "name": "E2E owner", "email": owner_email, "password": "SecurePass1234",
+            })
+        assert registered.status_code == 201, registered.text
+        verified = owner.post("/api/v1/auth/verify-email", json={
+            "email": owner_email, "code": owner_otp["code"],
         })
         assert verified.status_code == 200, verified.text
         owner.headers.update({"X-CSRF-Token": owner.cookies.get("netsentry_csrf")})
         website = owner.post("/api/v1/websites", json={
             "name": "Local E2E website", "url": f"http://127.0.0.1:{website_server.server_port}",
-            "platform": "custom", "authorization_confirmed": True,
+            "description": "A local authorized test site",
+            "platform": "custom_html", "authorization_confirmed": True,
         })
         assert website.status_code == 201, website.text
         site = website.json()
         token = site["ingest_token"]
         site_id = site["id"]
+        assert site["description"] == "A local authorized test site"
         assert site["collector_process_status"] == "NOT_CONFIGURED"
+
+        monkeypatch.setenv("NETSENTRY_ENV", "production")
+        monkeypatch.setenv("NETSENTRY_PUBLIC_API_URL", "http://api.example.test")
+        rejected_http_package = owner.get(f"/api/v1/collectors/{site_id}/agent-package")
+        assert rejected_http_package.status_code == 503
+
+        monkeypatch.setenv("NETSENTRY_PUBLIC_API_URL", "https://api.example.test")
+        package = owner.get(f"/api/v1/collectors/{site_id}/agent-package", params={"os": "linux"})
+        assert package.status_code == 200, package.text
+        monkeypatch.setenv("NETSENTRY_ENV", "development")
+        package_bytes = package.content
+        with zipfile.ZipFile(BytesIO(package_bytes)) as archive:
+            names = set(archive.namelist())
+            assert {
+                "netsentry_agent.py", "generic_traffic_collector.py", "install_linux.sh",
+                "config.json", "README.txt", "INSTALLATION_GUIDE.md", "TROUBLESHOOTING.md",
+            } <= names
+            assert not any(name.startswith(("backend/", "frontend/")) for name in names)
+            config = json.loads(archive.read("config.json"))
+            assert config["site_id"] == site_id
+            assert config["api_url"] == "https://api.example.test"
+            readme = archive.read("README.txt").decode("utf-8")
+            assert f"Website ID:          {site_id}" in readme
+            assert "@" not in readme
+            assert "One-time NetSentry collector key" in readme
+            for section in (
+                "1. WELCOME TO NETSENTRY AI",
+                "2. WHAT THIS PACKAGE DOES",
+                "3. WHAT FILES ARE INCLUDED",
+                "4. SYSTEM REQUIREMENTS",
+                "5. HOW THE CONNECTION WORKS",
+                "6. WINDOWS INSTALLATION",
+                "7. LINUX INSTALLATION",
+                "8. HOW TO SELECT THE ACCESS-LOG FILE",
+                "9. SUPPORTED ACCESS-LOG FORMATS",
+                "10. HOW TO ENTER THE ONE-TIME COLLECTOR TOKEN",
+                "11. HOW TO START AND STOP THE AGENT",
+                "12. HOW TO GENERATE TEST WEBSITE TRAFFIC",
+                "13. HOW TO VERIFY IN THE NETSENTRY DASHBOARD",
+                "14. TROUBLESHOOTING COMMON ERRORS",
+                "15. SECURITY AND PRIVACY",
+                "16. HOW TO DISCONNECT THE WEBSITE",
+                "17. CUSTOMER SUPPORT",
+            ):
+                assert section in readme
+            assert token.encode() not in package_bytes
+
+        windows_package = owner.get(f"/api/v1/collectors/{site_id}/agent-package", params={"os": "windows"})
+        assert windows_package.status_code == 200
+        with zipfile.ZipFile(BytesIO(windows_package.content)) as archive:
+            assert "install_windows.ps1" in archive.namelist()
+            assert "install_linux.sh" not in archive.namelist()
+
+        monkeypatch.setenv("NETSENTRY_PUBLIC_API_URL", "http://127.0.0.1:8000")
+        local_package = owner.get(f"/api/v1/collectors/{site_id}/agent-package")
+        assert local_package.status_code == 200
+        with zipfile.ZipFile(BytesIO(local_package.content)) as archive:
+            local_readme = archive.read("README.txt").decode("utf-8")
+            assert "local-development address" in local_readme
+            assert "same computer" in local_readme
+        monkeypatch.setenv("NETSENTRY_PUBLIC_API_URL", "https://api.example.test")
+
+        unauthorized = TestClient(app).get(f"/api/v1/collectors/{site_id}/agent-package")
+        assert unauthorized.status_code == 401
     
         with pytest.raises(HTTPError) as not_found:
             urlopen(f"http://127.0.0.1:{website_server.server_port}/.env", timeout=3)
@@ -117,6 +195,11 @@ def test_real_local_http_log_collector_ingestion_detection_and_isolation(tmp_pat
         assert status["anomaly_count"] == 1
         assert status["verified"] is True
         assert status["requests_per_minute"] == 1
+        listed_sites = owner.get("/api/v1/websites").json()["websites"]
+        assert listed_sites[0]["description"] == "A local authorized test site"
+        assert listed_sites[0]["total_events"] == 1
+        assert listed_sites[0]["suspicious_requests"] == 1
+        assert listed_sites[0]["blocked_requests"] is None
         listed = owner.get(f"/api/v1/websites/{site_id}/events", params={"classification": "suspicious"}).json()
         assert listed["total"] == 1
         assert listed["events"][0]["path"] == "/.env"
@@ -146,10 +229,20 @@ def test_real_local_http_log_collector_ingestion_detection_and_isolation(tmp_pat
         assert bad_token.json()["detail"]["code"] == "TOKEN_INVALID"
 
         other = TestClient(app)
-        other_verified = register_and_verify(other, {
-            "name": "Other E2E user", "email": f"e2e-other-{uuid4().hex}@gmail.com", "password": "SecurePass1234",
+        other_otp = {}
+        other_email = f"e2e-other-{uuid4().hex}@gmail.com"
+        with patch(
+            "backend.app.api.auth_routes.send_verification_email",
+            side_effect=lambda _email, _name, code: other_otp.update(code=code),
+        ):
+            other_registered = other.post("/api/v1/auth/register", json={
+                "name": "Other E2E user", "email": other_email, "password": "SecurePass1234",
+            })
+        assert other_registered.status_code == 201, other_registered.text
+        other_verified = other.post("/api/v1/auth/verify-email", json={
+            "email": other_email, "code": other_otp["code"],
         })
-        assert other_verified.status_code == 200
+        assert other_verified.status_code == 200, other_verified.text
         other.headers.update({"X-CSRF-Token": other.cookies.get("netsentry_csrf")})
         assert other.get(f"/api/v1/websites/{site_id}/events").status_code == 404
         assert other.get(f"/api/v1/websites/{site_id}/alerts").status_code == 404

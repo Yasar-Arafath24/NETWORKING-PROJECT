@@ -118,6 +118,29 @@ export async function addWebsite(values) {
   });
 }
 
+export async function downloadWebsiteCollectorPackage(siteId, targetOs) {
+  const url = `${API_BASE_URL}/api/v1/collectors/${encodeURIComponent(siteId)}/agent-package?os=${encodeURIComponent(targetOs)}`;
+  let response;
+  try {
+    response = await fetch(url, { credentials: "include" });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The agent package download timed out.", { cause: error });
+    }
+    throw new Error(BACKEND_UNREACHABLE_MESSAGE, { cause: error });
+  }
+  if (!response.ok) await parseResponse(response);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `netsentry-${siteId}-${targetOs}.zip`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 export async function setWebsiteEnabled(id, enabled) {
   return request(API_BASE_URL + "/api/v1/websites/" + id + "?enabled=" + enabled, { method: "PATCH" });
 }
