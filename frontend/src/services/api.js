@@ -33,11 +33,12 @@ async function parseResponse(response) {
         ? data.detail || data.message
         : data;
 
-    const error = new Error(
-      detail
-        ? String(detail)
-        : `Request failed with status ${response.status}`
-    );
+    const statusMessage = response.status === 502
+      ? "Authentication service is temporarily unavailable. Confirm the backend is deployed and healthy, then try again."
+      : response.status === 503
+        ? "The authentication service is starting. Wait a moment and try again."
+        : `Request failed with status ${response.status}`;
+    const error = new Error(detail ? String(detail) : statusMessage);
     error.status = response.status;
     throw error;
   }

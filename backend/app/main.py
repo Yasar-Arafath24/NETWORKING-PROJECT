@@ -27,6 +27,7 @@ from backend.app.api.website_routes import ingest_router as website_ingest_route
 from backend.app.api.routes import health_check, router
 from backend.app.services.database import Base, engine
 from sqlalchemy import inspect, text
+from fastapi.responses import FileResponse
 from backend.app.models.analysis import AnalysisReport
 from backend.app.models.live_monitoring import LiveFlowRecord, NetworkAlert
 from backend.app.models.user import AuthRateLimit, EmailVerification, PasswordResetOtp, User, UserSession
@@ -152,3 +153,13 @@ async def health_check():
         "service": "NetSentry AI API",
         "version": "1.0.0",
     }
+
+
+frontend_dist = project_root / "frontend" / "dist"
+if frontend_dist.is_dir():
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    def frontend_spa(frontend_path: str):
+        requested_file = frontend_dist / frontend_path
+        if requested_file.is_file():
+            return FileResponse(requested_file)
+        return FileResponse(frontend_dist / "index.html")
