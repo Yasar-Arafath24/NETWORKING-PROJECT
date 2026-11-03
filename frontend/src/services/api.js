@@ -1,4 +1,6 @@
 
+import { supabase } from "../lib/supabase";
+
 // Vite proxies /api/v1 to the IPv4 loopback backend in development. This
 // keeps browser requests and session cookies on the frontend's origin.
 // Set VITE_API_BASE_URL when the production API has a separate origin.
@@ -60,19 +62,11 @@ export async function authenticate(action, values) {
   });
 }
 
-export async function verifySignupEmail(email, code) {
-  return request(API_BASE_URL + "/api/v1/auth/verify-email", {
+export async function exchangeSupabaseSession(accessToken, name) {
+  return request(API_BASE_URL + "/api/v1/auth/supabase/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, code }),
-  });
-}
-
-export async function resendSignupCode(email) {
-  return request(API_BASE_URL + "/api/v1/auth/verification/resend", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ access_token: accessToken, name }),
   });
 }
 
@@ -89,6 +83,9 @@ export async function authenticateWithGoogle(credential, nonce) {
 }
 
 export async function signOut() {
+  if (supabase) {
+    await supabase.auth.signOut();
+  }
   return request(API_BASE_URL + "/api/v1/auth/logout", { method: "POST" });
 }
 

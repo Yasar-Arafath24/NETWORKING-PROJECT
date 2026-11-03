@@ -4,12 +4,15 @@ from email.utils import formataddr
 from html import escape
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
 import secrets
 import smtplib
 import ssl
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -68,6 +71,11 @@ class VerifyResetOtpRequest(ForgotPasswordRequest):
 
 class ResetPasswordRequest(BaseModel):
     password: str = Field(min_length=6, max_length=128)
+
+
+class SupabaseSessionRequest(BaseModel):
+    access_token: str = Field(min_length=1)
+    name: str | None = Field(default=None, max_length=120)
 
 
 def verify_google_credential(credential: str, client_id: str) -> dict:
@@ -231,6 +239,7 @@ def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str
         logger.warning("SMTP server rejected authentication (SMTP status %s).", exc.smtp_code)
         if host.lower() == "smtp-relay.brevo.com":
             detail = (
+                "Brevo requires its SMTP login and SMTP key. "
                 f"Brevo rejected SMTP authentication (status {exc.smtp_code}). Set MAIL_USERNAME "
                 "to your Brevo SMTP login and MAIL_PASSWORD to a newly generated Brevo SMTP key "
                 "(not an API key), then restart the backend."
@@ -263,45 +272,8 @@ def _send_otp_email(email: str, name: str, code: str, subject: str, purpose: str
         ) from None
 
 
-def send_verification_email(email: str, name: str, code: str) -> None:
-    _send_otp_email(email, name, code, "Your NetSentry verification code", "verification", EMAIL_CODE_MINUTES)
-
-
 def send_password_reset_email(email: str, name: str, code: str) -> None:
     _send_otp_email(email, name, code, "Reset your NetSentry password", "password reset", PASSWORD_RESET_OTP_MINUTES)
-
-
-def _create_email_verification(user: User, db: Session) -> str:
-    delivery_mode = _validate_email_delivery_config()
-    secret = _verification_secret()
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    now = datetime.now(timezone.utc)
-    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
-    digest = hmac.new(secret, f"{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
-    if record:
-        record.code_hash = digest
-        record.expires_at = now + timedelta(minutes=EMAIL_CODE_MINUTES)
-        record.created_at = now
-        record.attempts = 0
-    else:
-        db.add(EmailVerification(
-            user_id=user.id,
-            code_hash=digest,
-            expires_at=now + timedelta(minutes=EMAIL_CODE_MINUTES),
-            created_at=now,
-            attempts=0,
-        ))
-    db.commit()
-    try:
-        send_verification_email(user.email, user.name, code)
-    except HTTPException:
-        record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
-        if record:
-            db.delete(record)
-            db.commit()
-        logger.error("Account verification email delivery failed.")
-        raise
-    return delivery_mode
 
 
 def _consume_auth_rate_limit(key: str, db: Session, limit: int, window_seconds: int) -> None:
@@ -388,6 +360,33 @@ def user_json(user: User) -> dict:
     return {"id": user.id, "name": user.name, "email": user.email, "role": user.role, "created_at": user.created_at}
 
 
+def _verify_supabase_access_token(access_token: str) -> dict:
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    publishable_key = (
+        os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+        or os.getenv("SUPABASE_ANON_KEY", "").strip()
+    )
+    if not supabase_url or not publishable_key:
+        raise HTTPException(503, "Supabase Auth is not configured on the backend.")
+    api_request = urllib_request.Request(
+        f"{supabase_url}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "apikey": publishable_key,
+        },
+        method="GET",
+    )
+    try:
+        with urllib_request.urlopen(api_request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise HTTPException(401, "Your Supabase session has expired. Sign in again.") from None
+        raise HTTPException(503, "Supabase Auth could not be reached.") from None
+    except (urllib_error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        raise HTTPException(503, "Supabase Auth could not be reached.") from None
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -425,87 +424,75 @@ def _issue_session(user: User, response: Response, db: Session) -> None:
     response.set_cookie(CSRF_COOKIE, csrf, httponly=False, secure=secure, samesite=same_site, path="/", max_age=age)
 
 
-@router.post("/register", status_code=201)
-def register(payload: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    name, email = payload.name.strip(), _normalize_email(payload.email)
-    if not name:
-        raise HTTPException(422, "Enter your name.")
-    if not re.search(r"[a-z]", payload.password) or not re.search(r"[A-Z]", payload.password) or not re.search(r"\d", payload.password):
-        raise HTTPException(422, "Password must include an uppercase letter, a lowercase letter, and a number.")
-    if len(payload.password) < 6:
-        raise HTTPException(422, "Password must be at least 6 characters.")
-    _validate_email_delivery_config()
-    _rate_limit_email_verification(request, email, db)
-    user = User(name=name, email=email, password_hash=_password_hash(payload.password), email_verified=False)
-    db.add(user)
+@router.post("/supabase/session")
+def exchange_supabase_session(
+    payload: SupabaseSessionRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    supabase_user = _verify_supabase_access_token(payload.access_token)
+    email = supabase_user.get("email")
+    if not isinstance(email, str):
+        raise HTTPException(401, "The Supabase session does not contain a verified email.")
+    email = _normalize_email(email)
+    if not supabase_user.get("email_confirmed_at"):
+        raise HTTPException(403, "Verify your email before signing in.")
+
+    user = db.query(User).filter(User.email == email).first()
+    metadata = supabase_user.get("user_metadata") if isinstance(supabase_user.get("user_metadata"), dict) else {}
+    supplied_name = payload.name.strip()[:120] if payload.name else ""
+    metadata_name = metadata.get("name")
+    name = supplied_name or (metadata_name.strip()[:120] if isinstance(metadata_name, str) else "")
+
+    if user:
+        if name and not user.name.strip():
+            user.name = name
+        user.email_verified = True
+    else:
+        user = User(
+            name=name or email.split("@", 1)[0][:120],
+            email=email,
+            password_hash=_password_hash(secrets.token_urlsafe(48)),
+            email_verified=True,
+            is_active=True,
+        )
+        db.add(user)
+
     try:
         db.commit()
+        db.refresh(user)
     except IntegrityError as exc:
         db.rollback()
-        existing = db.query(User).filter(User.email == email).first()
-        if existing and not existing.email_verified:
-            _enforce_resend_cooldown(existing, db)
-            delivery_mode = _create_email_verification(existing, db)
-            message = "A new verification code has been sent to your email."
-            return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
-        if existing:
-            raise HTTPException(409, "An account with this email already exists.") from exc
-        raise
-    db.refresh(user)
-    try:
-        delivery_mode = _create_email_verification(user, db)
-    except HTTPException:
-        db.delete(user)
-        db.commit()
-        raise
-    message = "Enter the six-digit code sent to your email to finish creating your account."
-    return {"verification_required": True, "email": email, "delivery": delivery_mode, "message": message}
-
-
-@router.post("/verify-email")
-def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = Depends(get_db)):
-    email = _normalize_email(payload.email)
-    user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
-    if not user:
-        raise HTTPException(400, "This verification code is invalid or expired. Request a new code and try again.")
-    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
-    if not record:
-        raise HTTPException(400, "This verification code is invalid or expired. Request a new code and try again.")
-    now = datetime.now(timezone.utc)
-    expiry = record.expires_at
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
-    if expiry <= now:
-        db.delete(record)
-        db.commit()
-        raise HTTPException(400, "This verification code has expired. Request a new code.")
-    if record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
-        raise HTTPException(429, "Too many incorrect codes. Request a new code.")
-    secret = _verification_secret()
-    submitted = hmac.new(secret, f"{user.id}:{payload.code}".encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(submitted, record.code_hash):
-        record.attempts += 1
-        db.commit()
-        raise HTTPException(400, "That code does not match. Check your email and try again.")
-
-    user.email_verified = True
-    db.delete(record)
-    db.commit()
+        raise HTTPException(409, "This account is already linked to another NetSentry account.") from exc
     if not user.is_active:
         raise HTTPException(403, "This NetSentry account is unavailable.")
+
     _issue_session(user, response, db)
     return {"user": user_json(user)}
 
 
+@router.post("/register", status_code=201)
+def register(payload: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    raise HTTPException(
+        410,
+        "Registration is handled by Supabase Auth. Use the updated frontend registration flow.",
+    )
+
+
+@router.post("/verify-email")
+def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = Depends(get_db)):
+    raise HTTPException(
+        410,
+        "Email verification is handled by Supabase Auth. Verify the OTP in the frontend with type 'signup'.",
+    )
+
+
 @router.post("/verification/resend", status_code=202)
 def resend_verification(payload: ResendVerificationRequest, request: Request, db: Session = Depends(get_db)):
-    email = _normalize_email(payload.email)
-    _rate_limit_email_verification(request, email, db)
-    user = db.query(User).filter(User.email == email, User.email_verified.is_(False)).first()
-    if user:
-        _enforce_resend_cooldown(user, db)
-        _create_email_verification(user, db)
-    return {"message": "If an unverified account exists, a code was sent."}
+    raise HTTPException(
+        410,
+        "Signup OTP resend is handled by Supabase Auth.",
+    )
 
 
 @router.post("/login")
@@ -517,15 +504,10 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if not user.is_active:
         raise HTTPException(403, "This NetSentry account is unavailable.")
     if not user.email_verified:
-        record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
-        if not record or _aware(record.expires_at) <= datetime.now(timezone.utc):
-            if record:
-                db.delete(record)
-                db.commit()
-            _rate_limit_email_verification(request, email, db)
-            _create_email_verification(user, db)
-            raise HTTPException(403, "Verify your email before signing in. A new code was sent to your inbox.")
-        raise HTTPException(403, "Verify your email before signing in. Check your inbox for the six-digit code.")
+        raise HTTPException(
+            403,
+            "Verify your email through Supabase before signing in.",
+        )
     _issue_session(user, response, db)
     return {"user": user_json(user)}
 

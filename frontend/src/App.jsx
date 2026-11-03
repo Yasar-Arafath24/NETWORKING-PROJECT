@@ -2,7 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Eye, EyeOff, LoaderCircle, Mail, Shield } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./components/Dashboard";
-import { authenticate, authenticateWithGoogle, getCurrentUser, getGoogleSignInConfig, requestPasswordReset, resendSignupCode, resetAccountPassword, signOut, verifyPasswordResetOtp, verifySignupEmail } from "./services/api";
+import {
+  authenticate,
+  authenticateWithGoogle,
+  exchangeSupabaseSession,
+  getCurrentUser,
+  getGoogleSignInConfig,
+  requestPasswordReset,
+  resetAccountPassword,
+  signOut,
+  verifyPasswordResetOtp,
+} from "./services/api";
+import { supabase, supabaseConfigured } from "./lib/supabase";
 
 function loadGoogleIdentity() {
   if (window.google?.accounts?.id) return Promise.resolve(window.google);
@@ -194,20 +205,59 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     setNotice("");
     try {
       if (verificationPending) {
-        const result = await verifySignupEmail(email.trim().toLowerCase(), verificationCode);
+        if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
+        const normalizedEmail = email.trim().toLowerCase();
+        const { data, error } = await supabase.auth.verifyOtp({
+          email: normalizedEmail,
+          token: verificationCode,
+          type: "signup",
+        });
+        if (error) throw error;
+        const accessToken = data.session?.access_token;
+        if (!accessToken) throw new Error("Verification succeeded, but a session was not created. Sign in to continue.");
+        const result = await exchangeSupabaseSession(accessToken, name.trim());
         onAuthenticated(result.user);
         navigate("/dashboard", { replace: true });
       } else {
         const payload = { email: email.trim().toLowerCase(), password };
         if (registering) payload.name = name.trim();
-        const result = await authenticate(registering ? "register" : "login", payload);
         if (registering) {
+          if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
+          const { data, error } = await supabase.auth.signUp({
+            email: payload.email,
+            password: payload.password,
+            options: { data: { name: payload.name } },
+          });
+          if (error) throw error;
+          if (!data.user) throw new Error("An account with this email already exists.");
+          if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+            throw new Error("An account with this email already exists.");
+          }
+          if (data.session) {
+            const result = await exchangeSupabaseSession(data.session.access_token, payload.name);
+            onAuthenticated(result.user);
+            navigate("/dashboard", { replace: true });
+            return;
+          }
           setVerificationPending(true);
           setVerificationCode("");
           setResendSeconds(60);
           setPassword("");
-          setNotice(result.message || "Verification code sent. Enter it to continue.");
+          setNotice("Verification code sent by Supabase. Enter it to finish creating your account.");
         } else {
+          if (supabaseConfigured && supabase) {
+            const { data, error } = await supabase.auth.signInWithPassword({
+              email: payload.email,
+              password: payload.password,
+            });
+            if (!error && data.session?.access_token) {
+              const result = await exchangeSupabaseSession(data.session.access_token);
+              onAuthenticated(result.user);
+              navigate("/dashboard", { replace: true });
+              return;
+            }
+          }
+          const result = await authenticate("login", payload);
           onAuthenticated(result.user);
           navigate("/dashboard", { replace: true });
         }
@@ -229,9 +279,14 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     setError("");
     setNotice("");
     try {
-      const result = await resendSignupCode(email.trim().toLowerCase());
+      if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email: email.trim().toLowerCase(),
+      });
+      if (error) throw error;
       setResendSeconds(60);
-      setNotice(result.message || "If an unverified account exists, a new code has been sent.");
+      setNotice("If an unverified account exists, Supabase sent a new confirmation code.");
     } catch (err) {
       setError(err.message);
     } finally {
