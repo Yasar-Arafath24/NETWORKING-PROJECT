@@ -276,6 +276,10 @@ def send_password_reset_email(email: str, name: str, code: str) -> None:
     _send_otp_email(email, name, code, "Reset your NetSentry password", "password reset", PASSWORD_RESET_OTP_MINUTES)
 
 
+def send_verification_email(email: str, name: str, code: str) -> None:
+    _send_otp_email(email, name, code, "Verify your NetSentry email", "email verification", EMAIL_CODE_MINUTES)
+
+
 def _consume_auth_rate_limit(key: str, db: Session, limit: int, window_seconds: int) -> None:
     now = datetime.now(timezone.utc)
     db.query(AuthRateLimit).filter(
@@ -354,6 +358,41 @@ def _enforce_resend_cooldown(user: User, db: Session) -> None:
     wait = EMAIL_CODE_RESEND_SECONDS - (datetime.now(timezone.utc) - created).total_seconds()
     if wait > 0:
         raise HTTPException(429, f"Please wait {int(wait) + 1} seconds before requesting another code.")
+
+
+def _enforce_resend_cooldown_for_login(user: User, db: Session) -> bool:
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+    if not record:
+        return False
+    created = record.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return EMAIL_CODE_RESEND_SECONDS - (datetime.now(timezone.utc) - created).total_seconds() > 0
+
+
+def _verification_code_hash(user_id: int, code: str) -> str:
+    return hmac.new(_verification_secret(), f"email-verification:{user_id}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+def _create_signup_verification(user: User, db: Session) -> str:
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    now = datetime.now(timezone.utc)
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first()
+    if record:
+        record.code_hash = _verification_code_hash(user.id, code)
+        record.expires_at = now + timedelta(minutes=EMAIL_CODE_MINUTES)
+        record.created_at = now
+        record.attempts = 0
+    else:
+        db.add(EmailVerification(
+            user_id=user.id,
+            code_hash=_verification_code_hash(user.id, code),
+            expires_at=now + timedelta(minutes=EMAIL_CODE_MINUTES),
+            created_at=now,
+            attempts=0,
+        ))
+    db.commit()
+    return code
 
 
 def user_json(user: User) -> dict:
@@ -473,26 +512,83 @@ def exchange_supabase_session(
 
 @router.post("/register", status_code=201)
 def register(payload: RegisterRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    raise HTTPException(
-        410,
-        "Registration is handled by Supabase Auth. Use the updated frontend registration flow.",
+    name = payload.name.strip()
+    email = _normalize_email(payload.email)
+    if not name:
+        raise HTTPException(422, "Enter your name.")
+    if not re.search(r"[a-z]", payload.password) or not re.search(r"[A-Z]", payload.password) or not re.search(r"\d", payload.password):
+        raise HTTPException(422, "Password must include an uppercase letter, a lowercase letter, and a number.")
+
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        if existing.email_verified:
+            raise HTTPException(409, "An account with this email already exists.")
+        raise HTTPException(429, "This account is waiting for email verification.")
+
+    user = User(
+        name=name,
+        email=email,
+        password_hash=_password_hash(payload.password),
+        email_verified=False,
+        is_active=True,
     )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "An account with this email already exists.") from exc
+
+    db.refresh(user)
+    code = _create_signup_verification(user, db)
+    try:
+        send_verification_email(user.email, user.name, code)
+    except HTTPException:
+        db.query(EmailVerification).filter(EmailVerification.user_id == user.id).delete(synchronize_session=False)
+        db.delete(user)
+        db.commit()
+        logger.error("Signup verification email delivery failed.")
+        raise
+    return {"verification_required": True, "email": user.email}
 
 
 @router.post("/verify-email")
 def verify_email(payload: VerifyEmailRequest, response: Response, db: Session = Depends(get_db)):
-    raise HTTPException(
-        410,
-        "Email verification is handled by Supabase Auth. Verify the OTP in the frontend with type 'signup'.",
-    )
+    email = _normalize_email(payload.email)
+    user = db.query(User).filter(User.email == email).first()
+    record = db.query(EmailVerification).filter(EmailVerification.user_id == user.id).first() if user else None
+    if not record or user.email_verified:
+        raise HTTPException(400, "The verification code is invalid or expired.")
+    if _aware(record.expires_at) <= datetime.now(timezone.utc):
+        db.delete(record)
+        db.commit()
+        raise HTTPException(400, "The verification code is invalid or expired.")
+    if record.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
+        raise HTTPException(429, "Too many attempts. Request a new verification code.")
+    submitted = _verification_code_hash(user.id, payload.code)
+    if not hmac.compare_digest(submitted, record.code_hash):
+        record.attempts += 1
+        db.commit()
+        raise HTTPException(400, "The verification code is invalid or expired.")
+
+    user.email_verified = True
+    db.delete(record)
+    db.commit()
+    _issue_session(user, response, db)
+    return {"user": user_json(user)}
 
 
 @router.post("/verification/resend", status_code=202)
 def resend_verification(payload: ResendVerificationRequest, request: Request, db: Session = Depends(get_db)):
-    raise HTTPException(
-        410,
-        "Signup OTP resend is handled by Supabase Auth.",
-    )
+    email = _normalize_email(payload.email)
+    _validate_email_delivery_config()
+    _rate_limit_email_verification(request, email, db)
+    user = db.query(User).filter(User.email == email, User.email_verified.is_(False), User.is_active.is_(True)).first()
+    if user:
+        _enforce_resend_cooldown(user, db)
+        code = _create_signup_verification(user, db)
+        send_verification_email(user.email, user.name, code)
+    return {"message": "If an unverified account matches that email, a new verification code will be sent."}
 
 
 @router.post("/login")
@@ -504,10 +600,13 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if not user.is_active:
         raise HTTPException(403, "This NetSentry account is unavailable.")
     if not user.email_verified:
-        raise HTTPException(
-            403,
-            "Verify your email through Supabase before signing in.",
-        )
+        if not _enforce_resend_cooldown_for_login(user, db):
+            code = _create_signup_verification(user, db)
+            send_verification_email(user.email, user.name, code)
+            message = "Verify your email before signing in. A new code was sent to your email."
+        else:
+            message = "Verify your email before signing in. Use the code already sent or request a new one shortly."
+        raise HTTPException(403, message)
     _issue_session(user, response, db)
     return {"user": user_json(user)}
 

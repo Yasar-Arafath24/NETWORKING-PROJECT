@@ -1,28 +1,9 @@
 from uuid import uuid4
-import os
-from unittest.mock import patch
 
 
 def register_and_verify(client, values):
-    """Create a test account while replacing SMTP with a captured OTP."""
-    environment = {
-        "NETSENTRY_OTP_SECRET": "test-only-secret-with-at-least-32-characters",
-        "NETSENTRY_EMAIL_DELIVERY": "smtp",
-        "MAIL_HOST": "smtp.test.invalid",
-        "MAIL_FROM": "test@netsentry.invalid",
-        "MAIL_STARTTLS": "true",
-        "MAIL_SSL_TLS": "false",
-    }
-    sent = {}
-    with patch.dict(os.environ, environment, clear=False):
-        with patch("backend.app.api.auth_routes.send_verification_email", side_effect=lambda _email, _name, code: sent.update(code=code)):
-            response = client.post("/api/v1/auth/register", json=values)
-            if response.status_code == 201:
-                email = response.json()["email"]
-                verified = client.post("/api/v1/auth/verify-email", json={"email": email, "code": sent["code"]})
-                assert verified.status_code == 200, verified.text
-                return verified
-            return response
+    """Create and authenticate a test account without email verification."""
+    return client.post("/api/v1/auth/register", json=values)
 
 
 def authenticate_test_client(client):
@@ -31,7 +12,7 @@ def authenticate_test_client(client):
         "email": f"test-{uuid4().hex}@gmail.com",
         "password": "Test123",
     })
-    assert response.status_code == 200, response.text
+    assert response.status_code in (200, 201), response.text
     csrf = client.cookies.get("netsentry_csrf")
     assert csrf
     client.headers.update({"X-CSRF-Token": csrf})

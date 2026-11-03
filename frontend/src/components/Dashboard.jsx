@@ -1935,8 +1935,8 @@ export default function Dashboard({ user = null, onSignOut }) {
           to { transform: scaleX(1); opacity: .85; }
         }
         .developers-footer {
-          margin-top: 44px;
-          padding-top: 28px;
+          margin-top: 28px;
+          padding-top: 18px;
           border-top: 1px solid #e2e8f0;
         }
         .footer-quick-links {
@@ -1945,8 +1945,8 @@ export default function Dashboard({ user = null, onSignOut }) {
           justify-content: center;
           flex-wrap: wrap;
           gap: 5px 14px;
-          margin-top: 18px;
-          padding-top: 14px;
+          margin-top: 12px;
+          padding-top: 10px;
           border-top: 1px solid #edf0f4;
         }
         .footer-quick-links-label {
@@ -1996,30 +1996,30 @@ export default function Dashboard({ user = null, onSignOut }) {
           letter-spacing: 1.5px;
         }
         .developers-footer-heading h2 {
-          margin: 7px 0 3px;
+          margin: 5px 0 2px;
           color: #0f172a;
-          font-size: 20px;
+          font-size: 17px;
           letter-spacing: -.6px;
         }
         .developers-footer-heading p {
           margin: 0;
           color: #64748b;
-          font-size: 12px;
+          font-size: 11px;
         }
         .developer-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 10px;
-          margin-top: 18px;
+          gap: 8px;
+          margin-top: 12px;
         }
         .developer-card {
           position: relative;
           display: grid;
-          grid-template-columns: 42px minmax(0, 1fr) auto;
+          grid-template-columns: 36px minmax(0, 1fr) auto;
           align-items: center;
-          gap: 11px;
+          gap: 9px;
           min-width: 0;
-          padding: 13px;
+          padding: 10px;
           overflow: hidden;
           border: 1px solid #e5e7eb;
           border-radius: 9px;
@@ -2044,12 +2044,12 @@ export default function Dashboard({ user = null, onSignOut }) {
         .developer-avatar {
           display: grid;
           place-items: center;
-          width: 42px;
-          height: 42px;
+          width: 36px;
+          height: 36px;
           border-radius: 50%;
           color: #fff;
           background: #172033;
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 800;
           letter-spacing: .5px;
         }
@@ -2067,7 +2067,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           display: block;
           overflow: hidden;
           color: #1e293b;
-          font-size: 12px;
+          font-size: 11px;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
@@ -2075,8 +2075,8 @@ export default function Dashboard({ user = null, onSignOut }) {
         .developer-links a {
           display: grid;
           place-items: center;
-          width: 32px;
-          height: 32px;
+          width: 28px;
+          height: 28px;
           border: 1px solid #e2e8f0;
           border-radius: 7px;
           color: #475569;
@@ -2092,11 +2092,11 @@ export default function Dashboard({ user = null, onSignOut }) {
           display: flex;
           justify-content: space-between;
           gap: 15px;
-          padding: 18px 0 3px;
-          margin-top: 22px;
+          padding: 12px 0 2px;
+          margin-top: 14px;
           border-top: 1px solid #edf0f4;
           color: #94a3b8;
-          font-size: 10px;
+          font-size: 9px;
         }
         @media (max-width: 1050px) {
           .developer-grid { grid-template-columns: 1fr; }
@@ -2301,6 +2301,32 @@ export default function Dashboard({ user = null, onSignOut }) {
           text-align: left;
         }
 
+        .topbar .profile-menu,
+        .topbar .profile-menu button {
+          color: #111111 !important;
+          background: #ffffff !important;
+        }
+
+        .topbar .profile-menu {
+          border: 1px solid #dedede;
+          overflow: hidden;
+        }
+
+        .topbar .profile-menu button {
+          min-height: 42px;
+        }
+
+        .topbar .profile-menu button svg {
+          color: #111111 !important;
+          stroke: currentColor;
+        }
+
+        .topbar .profile-menu button:hover,
+        .topbar .profile-menu button:focus-visible {
+          color: #111111 !important;
+          background: #f2f2f2 !important;
+        }
+
         .notification-dot {
           position: absolute;
           top: 5px;
@@ -2425,7 +2451,7 @@ export default function Dashboard({ user = null, onSignOut }) {
 
         @media (max-width: 640px) {
           .topbar {
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             padding: 12px;
           }
 
@@ -2437,7 +2463,7 @@ export default function Dashboard({ user = null, onSignOut }) {
 
           .topbar-actions {
             display: flex;
-            width: 100%;
+            width: auto;
             justify-content: space-between;
           }
 
@@ -2490,4 +2516,3 @@ export default function Dashboard({ user = null, onSignOut }) {
     </div>
   );
 }
-

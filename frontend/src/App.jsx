@@ -1,19 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Eye, EyeOff, LoaderCircle, Mail, Shield } from "lucide-react";
+import { ArrowLeft, ArrowRight, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, Shield, UserRound } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./components/Dashboard";
 import {
   authenticate,
   authenticateWithGoogle,
-  exchangeSupabaseSession,
   getCurrentUser,
   getGoogleSignInConfig,
   requestPasswordReset,
+  resendEmailVerification,
   resetAccountPassword,
   signOut,
+  verifyEmail,
   verifyPasswordResetOtp,
 } from "./services/api";
-import { supabase, supabaseConfigured } from "./lib/supabase";
 
 function loadGoogleIdentity() {
   if (window.google?.accounts?.id) return Promise.resolve(window.google);
@@ -45,8 +45,6 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [registering, setRegistering] = useState(false);
-  const [verificationPending, setVerificationPending] = useState(false);
-  const [verificationCode, setVerificationCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -66,6 +64,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [resendSeconds, setResendSeconds] = useState(0);
   const [resetComplete, setResetComplete] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
   const emailValid = isValidEmail(email);
   const isBusy = busy || googleBusy;
   const passwordValid = !registering || (
@@ -74,9 +73,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     /[A-Z]/.test(password) &&
     /\d/.test(password)
   );
-  const canSubmit = !isBusy && emailValid && (verificationPending
-    ? /^\d{6}$/.test(verificationCode)
-    : Boolean(password) && passwordValid && (!registering || Boolean(name.trim())));
+  const canSubmit = !isBusy && emailValid && Boolean(password) && passwordValid && (!registering || Boolean(name.trim()));
 
   useEffect(() => {
     let active = true;
@@ -203,95 +200,82 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     setBusy(true);
     setError("");
     setNotice("");
+    const payload = { email: email.trim().toLowerCase(), password };
+    if (registering) payload.name = name.trim();
     try {
-      if (verificationPending) {
-        if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
-        const normalizedEmail = email.trim().toLowerCase();
-        const { data, error } = await supabase.auth.verifyOtp({
-          email: normalizedEmail,
-          token: verificationCode,
-          type: "signup",
-        });
-        if (error) throw error;
-        const accessToken = data.session?.access_token;
-        if (!accessToken) throw new Error("Verification succeeded, but a session was not created. Sign in to continue.");
-        const result = await exchangeSupabaseSession(accessToken, name.trim());
-        onAuthenticated(result.user);
-        navigate("/dashboard", { replace: true });
-      } else {
-        const payload = { email: email.trim().toLowerCase(), password };
-        if (registering) payload.name = name.trim();
-        if (registering) {
-          if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
-          const { data, error } = await supabase.auth.signUp({
-            email: payload.email,
-            password: payload.password,
-            options: { data: { name: payload.name } },
-          });
-          if (error) throw error;
-          if (!data.user) throw new Error("An account with this email already exists.");
-          if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-            throw new Error("An account with this email already exists.");
-          }
-          if (data.session) {
-            const result = await exchangeSupabaseSession(data.session.access_token, payload.name);
-            onAuthenticated(result.user);
-            navigate("/dashboard", { replace: true });
-            return;
-          }
-          setVerificationPending(true);
-          setVerificationCode("");
-          setResendSeconds(60);
-          setPassword("");
-          setNotice("Verification code sent by Supabase. Enter it to finish creating your account.");
-        } else {
-          if (supabaseConfigured && supabase) {
-            const { data, error } = await supabase.auth.signInWithPassword({
-              email: payload.email,
-              password: payload.password,
-            });
-            if (!error && data.session?.access_token) {
-              const result = await exchangeSupabaseSession(data.session.access_token);
-              onAuthenticated(result.user);
-              navigate("/dashboard", { replace: true });
-              return;
-            }
-          }
-          const result = await authenticate("login", payload);
-          onAuthenticated(result.user);
-          navigate("/dashboard", { replace: true });
-        }
+      const result = await authenticate(registering ? "register" : "login", payload);
+      if (registering && result.verification_required) {
+        setEmail(payload.email);
+        navigate("/verify-email");
+        setNotice("Verification code sent. Check your inbox.");
+        return;
       }
+      onAuthenticated(result.user);
+      navigate("/dashboard", { replace: true });
     } catch (err) {
-      setError(err.message);
-      if (!registering && err.status === 403 && /verify your email/i.test(err.message)) {
-        setRegistering(true);
-        setVerificationPending(true);
-        setNotice("Your account needs email confirmation. Enter the code or request a new one.");
+      if (err.status === 403 && /verify your email/i.test(err.message)) {
+        setEmail(payload.email);
+        navigate("/verify-email");
+        setNotice("A verification code has been sent. Enter it to continue.");
+        return;
       }
+      setError(err.message);
     } finally {
       setBusy(false);
     }
   }
 
-  async function resendCode() {
+  async function submitEmailVerification(event) {
+    event.preventDefault();
+    if (!emailValid || !/^\d{6}$/.test(verificationCode) || busy) return;
     setBusy(true);
     setError("");
-    setNotice("");
     try {
-      if (!supabaseConfigured || !supabase) throw new Error("Supabase Auth is not configured.");
-      const { error } = await supabase.auth.resend({
-        type: "signup",
-        email: email.trim().toLowerCase(),
-      });
-      if (error) throw error;
-      setResendSeconds(60);
-      setNotice("If an unverified account exists, Supabase sent a new confirmation code.");
-    } catch (err) {
-      setError(err.message);
+      const result = await verifyEmail(email.trim().toLowerCase(), verificationCode);
+      setVerificationCode("");
+      onAuthenticated(result.user);
+      navigate("/dashboard", { replace: true });
+    } catch (verificationError) {
+      setError(verificationError.message || "The verification code is invalid or expired.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function resendVerificationCode() {
+    if (!emailValid || busy || resendSeconds > 0) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await resendEmailVerification(email.trim().toLowerCase());
+      setNotice(result.message || "A new verification code has been sent.");
+      setResendSeconds(60);
+    } catch (verificationError) {
+      setError(verificationError.message || "Unable to resend the verification code.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (location.pathname === "/verify-email") {
+    return (
+      <main className="account-gate">
+        <form className="account-card" onSubmit={submitEmailVerification}>
+          <div className="account-brand"><div className="account-mark"><Shield size={22} /></div><div><strong>NetSentry AI</strong><span>Network intelligence workspace</span></div></div>
+          <p className="account-eyebrow">VERIFY YOUR EMAIL</p>
+          <h1>Enter verification code</h1>
+          <p className="account-copy">Enter the six-digit code sent to {email || "your email"}. It expires in five minutes.</p>
+          <label>One-time code<input className="verification-code-input" name="verification-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(event) => { setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} required /></label>
+          {error && <p className="account-error" role="alert">{error}</p>}
+          {notice && <p className="account-success" role="status">{notice}</p>}
+          <button className="account-primary-button" disabled={!emailValid || !/^\d{6}$/.test(verificationCode) || busy}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Verifying…</> : <>Verify email <ArrowRight size={17} /></>}</button>
+          <div className="account-verify-actions">
+            <button type="button" className="account-link-button" disabled={busy || resendSeconds > 0 || !emailValid} onClick={resendVerificationCode}>{resendSeconds > 0 ? `Resend code in ${resendSeconds}s` : "Resend code"}</button>
+            <button type="button" className="account-link-button" onClick={() => navigate("/login")}><ArrowLeft size={15} /> Back to login</button>
+          </div>
+        </form>
+      </main>
+    );
   }
 
   if (location.pathname === "/forgot-password") {
@@ -360,51 +344,49 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     <main className="account-gate">
       <form className="account-card" onSubmit={submit}>
         <div className="account-brand"><div className="account-mark"><Shield size={22} /></div><div><strong>NetSentry AI</strong><span>Network intelligence workspace</span></div></div>
-        <p className="account-eyebrow">{verificationPending ? "EMAIL CONFIRMATION" : "SECURE WORKSPACE ACCESS"}</p>
-        <h1>{verificationPending ? "Verify your email" : registering ? "Create your account" : "Welcome back"}</h1>
-        <p className="account-copy">{verificationPending
-          ? `Enter the six-digit code sent to ${email}. It expires in five minutes.`
-          : registering
-            ? "Set up your account to save your network analyses and alerts."
-            : "Sign in to continue to your private network analysis workspace."}</p>
-        {!verificationPending && registering && <label>Name<input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength="120" /></label>}
-        {!verificationPending && <label>Email
-          <input
-            name="email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(event) => { setEmail(event.target.value); setError(""); }}
-            onBlur={() => setEmailTouched(true)}
-            aria-invalid={emailTouched && !emailValid}
-            aria-describedby="gmail-validation"
-            required
-          />
+        <p className="account-eyebrow">SECURE WORKSPACE ACCESS</p>
+        <h1>{registering ? "Create your account" : "Welcome back"}</h1>
+        <p className="account-copy">{registering
+          ? "Set up your account to save your network analyses and alerts."
+          : "Sign in to continue to your private network analysis workspace."}</p>
+        {registering && <label>Name<span className="account-input-field"><UserRound size={17} aria-hidden="true" /><input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength="120" /></span></label>}
+        <label>Email
+          <span className="account-input-field">
+            <Mail size={17} aria-hidden="true" />
+            <input
+              name="email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => { setEmail(event.target.value); setError(""); }}
+              onBlur={() => setEmailTouched(true)}
+              aria-invalid={emailTouched && !emailValid}
+              aria-describedby="gmail-validation"
+              required
+            />
+          </span>
           <span id="gmail-validation" className="account-field-error" aria-live="polite">
             {emailTouched && email.trim() && !emailValid
               ? "Enter a valid email address."
               : ""}
           </span>
-        </label>}
-        {verificationPending && <label>Verification code<input className="verification-code-input" name="verification-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(event) => { setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} placeholder="000000" aria-label="Six-digit email verification code" required /></label>}
-        {!verificationPending && <label>Password<input name="password" type="password" autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} minLength={registering ? 6 : 1} required /></label>}
-        {!verificationPending && !registering && <p className="account-switch account-forgot-link"><button type="button" onClick={() => { setError(""); setNotice(""); navigate("/forgot-password"); }}>Forgot Password?</button></p>}
-        {!verificationPending && registering && <small className="account-password-help">At least 6 characters, including uppercase, lowercase, and a number.</small>}
+        </label>
+        <label>Password<span className="account-password-field account-input-field"><LockKeyhole size={17} aria-hidden="true" /><input name="password" type={passwordVisible ? "text" : "password"} autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} minLength={registering ? 6 : 1} required /><button type="button" className="account-password-toggle" aria-label={passwordVisible ? "Hide password" : "Show password"} onClick={() => setPasswordVisible((visible) => !visible)}>{passwordVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
+        {registering && <small className="account-password-help">At least 6 characters, including uppercase, lowercase, and a number.</small>}
         {error && <p className="account-error" role="alert">{error}</p>}
         {notice && <p className="account-success" role="status">{notice}</p>}
-        <button className="account-primary-button" disabled={!canSubmit}>{busy ? <><LoaderCircle size={17} className="account-spin" /> {verificationPending ? "Verifying code…" : "Please wait…"}</> : <>{verificationPending ? "Verify email and continue" : registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></>}</button>
-        {verificationPending && <div className="account-verify-actions"><button type="button" className="account-link-button" disabled={isBusy || resendSeconds > 0} onClick={resendCode}><Mail size={15} /> {resendSeconds > 0 ? `Resend code in ${resendSeconds}s` : "Resend code"}</button><button type="button" className="account-link-button" disabled={isBusy} onClick={() => { setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); }}><ArrowLeft size={15} /> Back to signup</button></div>}
-        {!verificationPending && <>{googleConfig.client_id && <><div className="google-divider"><span>OR</span></div>
+        <button className="account-primary-button" disabled={!canSubmit}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Please wait…</> : <>{registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></>}</button>
+        {googleConfig.client_id && <><div className="google-divider"><span>OR</span></div>
         <div className={googleBusy ? "google-button-slot is-loading" : "google-button-slot"} aria-busy={googleBusy}>
           <div ref={googleButtonRef} className="google-button-target" />
           {googleBusy && <span className="google-loading-label" role="status">Verifying Google account…</span>}
         </div></>}
         {googleError && <p className="account-error" role="alert">{googleError}</p>}
         <p className="account-switch">{registering ? "Already have an account?" : "New to NetSentry?"}{" "}
-          <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setVerificationPending(false); setVerificationCode(""); setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
+          <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
             {registering ? "Sign in" : "Create an account"}
           </button>
-        </p></>}
+        </p>
       </form>
     </main>
   );
@@ -415,17 +397,40 @@ export default function App() {
   const location = useLocation();
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [startupComplete, setStartupComplete] = useState(false);
 
   useEffect(() => {
     getCurrentUser().then((result) => setUser(result.user)).catch(() => {}).finally(() => setAuthChecked(true));
   }, []);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setStartupComplete(true), 900);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     if (location.pathname === "/") navigate("/login", { replace: true });
   }, [location.pathname, navigate]);
 
-  if (!authChecked) return <div className="account-loading"><LoaderCircle size={20} className="account-spin" /> Restoring your secure session…</div>;
-  const recoveryRoute = ["/login", "/forgot-password", "/verify-reset-otp", "/reset-password"].includes(location.pathname);
+  if (!authChecked || !startupComplete) {
+    return (
+      <main className="startup-loading" role="status" aria-live="polite" aria-label="Loading NetSentry">
+        <div className="startup-mark" aria-hidden="true">
+          <span className="startup-mark-ring" />
+          <Shield size={30} strokeWidth={1.7} />
+        </div>
+        <div className="startup-brand">
+          <strong>NetSentry</strong>
+          <span>NETWORK INTELLIGENCE</span>
+        </div>
+        <div className="startup-progress" aria-hidden="true">
+          <span />
+        </div>
+        <p>{authChecked ? "Preparing your workspace…" : "Restoring your secure session…"}</p>
+      </main>
+    );
+  }
+  const recoveryRoute = ["/login", "/verify-email", "/forgot-password", "/verify-reset-otp", "/reset-password"].includes(location.pathname);
   if (!user || recoveryRoute) return <AccountGate onAuthenticated={setUser} onPasswordReset={() => setUser(null)} />;
   return (
     <>

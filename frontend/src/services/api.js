@@ -62,6 +62,22 @@ export async function authenticate(action, values) {
   });
 }
 
+export async function verifyEmail(email, code) {
+  return request(API_BASE_URL + "/api/v1/auth/verify-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code }),
+  });
+}
+
+export async function resendEmailVerification(email) {
+  return request(API_BASE_URL + "/api/v1/auth/verification/resend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
 export async function exchangeSupabaseSession(accessToken, name) {
   return request(API_BASE_URL + "/api/v1/auth/supabase/session", {
     method: "POST",

@@ -1,22 +1,22 @@
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
 
 :root {
-  font-family: "Inter", sans-serif;
-  color: #0f172a;
-  background: #f8fafc;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
+  color: #111111;
+  background: #ffffff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-text: #0f172a;
-  --color-muted: #64748b;
-  --color-border: #e2e8f0;
+  --color-primary: #111111;
+  --color-primary-hover: #000000;
+  --color-text: #111111;
+  --color-muted: #6b6b6b;
+  --color-border: #e5e5e5;
   --color-surface: #ffffff;
-  --color-background: #f8fafc;
+  --color-background: #ffffff;
 }
 
 * {
@@ -41,7 +41,7 @@ button,
 input,
 textarea,
 select {
-  font-family: "Inter", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", sans-serif;
 }
 
 button,
