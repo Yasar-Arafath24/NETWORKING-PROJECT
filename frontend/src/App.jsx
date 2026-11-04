@@ -465,11 +465,32 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setStartupComplete(true), 900);
+    const duration = window.location.pathname === "/" ? 5000 : 900;
+    const timer = window.setTimeout(() => setStartupComplete(true), duration);
     return () => window.clearTimeout(timer);
   }, []);
 
   const pathname = location.pathname.replace(/\/+$/, "") || "/";
+
+  if (pathname === "/" && !startupComplete) {
+    return (
+      <main className="startup-loading startup-landing-loading" role="status" aria-live="polite" aria-label="Loading NetSentry AI">
+        <div className="startup-landing-inner">
+          <div className="startup-mark" aria-hidden="true">
+            <span className="startup-mark-ring" />
+            <Shield size={32} strokeWidth={1.7} />
+          </div>
+          <div className="startup-brand">
+            <strong>NetSentry <span>AI</span></strong>
+            <span>NETWORK INTELLIGENCE</span>
+          </div>
+          <div className="startup-progress" aria-hidden="true">
+            <span />
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (pathname !== "/" && (!authChecked || !startupComplete)) {
     return (
@@ -501,9 +522,6 @@ export default function App() {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
   if (recoveryRoute) {
-    if (user && (pathname === "/login" || pathname === "/register")) {
-      return <Navigate to={getPostAuthPath(location.state)} replace />;
-    }
     return <AccountGate onAuthenticated={setUser} onPasswordReset={() => setUser(null)} />;
   }
 

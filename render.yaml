@@ -3,6 +3,7 @@ services:
     name: netsentry-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt && npm install && npm run build
+    rootDir: .
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health

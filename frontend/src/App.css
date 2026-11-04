@@ -66,9 +66,11 @@
 .account-input-field > svg {
   position: absolute;
   left: 14px;
+  top: 50%;
   z-index: 1;
   color: #8a9099;
   pointer-events: none;
+  transform: translateY(-50%);
 }
 .account-input-field input {
   padding-left: 43px;
@@ -79,8 +81,14 @@
 .account-input-field:focus-within > svg {
   color: var(--ios-blue, #007aff);
 }
-.account-password-field { position: relative; display: block; }
-.account-password-field input { padding-right: 42px; }
+.account-password-field {
+  position: relative;
+  display: block;
+}
+.account-password-field input {
+  padding-right: 42px;
+  padding-left: 43px;
+}
 .account-password-toggle { position: absolute; top: 50%; right: 10px; display: grid; width: 28px; height: 28px; place-items: center; padding: 0; transform: translateY(-50%); border: 0; border-radius: 5px; color: #64748b; background: transparent; cursor: pointer; }
 .account-password-toggle:hover { color: #1d4ed8; background: #eff6ff; }
 .account-card small { display: block; color: #94a3b8; }
@@ -209,6 +217,57 @@
     #ffffff;
 }
 
+.startup-landing-loading {
+  position: fixed;
+  inset: 0;
+  background: #ffffff;
+  animation: startup-landing-exit 700ms 4.3s cubic-bezier(.16, 1, .3, 1) forwards;
+}
+
+.startup-landing-inner {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  animation: startup-landing-enter 1.1s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.startup-landing-loading .startup-mark {
+  width: 78px;
+  height: 78px;
+  margin-bottom: 24px;
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.10);
+  animation: startup-logo-breathe 2.2s 1s ease-in-out infinite;
+}
+
+.startup-landing-loading .startup-mark-ring {
+  inset: -10px;
+  border-radius: 31px;
+}
+
+.startup-landing-loading .startup-brand strong {
+  font-size: 28px;
+}
+
+.startup-landing-loading .startup-brand strong span {
+  color: #94a3b8;
+  font-size: 14px;
+  letter-spacing: .08em;
+}
+
+.startup-landing-loading .startup-progress {
+  width: 118px;
+  height: 1px;
+  margin-top: 34px;
+  background: #ececec;
+}
+
+.startup-landing-loading .startup-progress span {
+  width: 100%;
+  transform-origin: left;
+  animation: startup-landing-progress 5s cubic-bezier(.65, 0, .35, 1) both;
+}
+
 .startup-mark {
   position: relative;
   width: 68px;
@@ -285,10 +344,37 @@
   50% { opacity: 0.75; transform: scale(1); }
 }
 
+@keyframes startup-landing-enter {
+  from { opacity: 0; filter: blur(10px); transform: scale(.96); }
+  to { opacity: 1; filter: blur(0); transform: scale(1); }
+}
+
+@keyframes startup-landing-exit {
+  to { opacity: 0; filter: blur(8px); transform: scale(1.025); }
+}
+
+@keyframes startup-logo-breathe {
+  0%, 100% { transform: scale(1); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.10); }
+  50% { transform: scale(1.025); box-shadow: 0 28px 70px rgba(0, 0, 0, 0.14); }
+}
+
+@keyframes startup-landing-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .startup-mark-ring,
   .startup-progress span {
     animation: none;
+  }
+
+  .startup-landing-loading {
+    animation: none;
+  }
+
+  .startup-landing-loading .startup-progress span {
+    transform: scaleX(1);
   }
 }
 .account-bar {
@@ -3088,6 +3174,36 @@ body,
   color: #111111 !important;
 }
 
+/* Apple-style navigation: subtle translucency, never an opaque text block */
+.sidebar .nav-item:not(.nav-active):hover {
+  border-color: rgba(255, 255, 255, 0.075) !important;
+  color: rgba(255, 255, 255, 0.96) !important;
+  background: rgba(255, 255, 255, 0.075) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.018),
+    0 4px 18px rgba(0, 0, 0, 0.12) !important;
+  backdrop-filter: blur(14px);
+  transform: translateX(2px);
+}
+
+.sidebar .nav-item:not(.nav-active):hover svg {
+  color: rgba(255, 255, 255, 0.96) !important;
+  transform: scale(1.04);
+}
+
+.sidebar .nav-item {
+  transition:
+    color 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms cubic-bezier(.2, .8, .2, 1) !important;
+}
+
+.sidebar .nav-item svg {
+  transition: color 180ms ease, transform 180ms cubic-bezier(.2, .8, .2, 1) !important;
+}
+
 .topbar .icon-button,
 .topbar .search-box,
 .mobile-menu-button {
@@ -3175,6 +3291,46 @@ body,
     color: #111111 !important;
     background: #f1f1f1 !important;
   }
+}
+
+/* Final navigation state contract: every text and icon follows its own state color. */
+.sidebar .nav-item:not(.nav-active),
+.sidebar .nav-item:not(.nav-active) span,
+.sidebar .nav-item:not(.nav-active) svg {
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+
+.sidebar .nav-item:not(.nav-active):hover,
+.sidebar .nav-item:not(.nav-active):focus-visible {
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.09) !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025) !important;
+  transform: none !important;
+}
+
+.sidebar .nav-item:not(.nav-active):hover span,
+.sidebar .nav-item:not(.nav-active):focus-visible span,
+.sidebar .nav-item:not(.nav-active):hover svg,
+.sidebar .nav-item:not(.nav-active):focus-visible svg {
+  color: #ffffff !important;
+}
+
+.sidebar .nav-item.nav-active,
+.sidebar .nav-item.nav-active:hover,
+.sidebar .nav-item.nav-active:focus-visible,
+.sidebar.sidebar-open .nav-active,
+.sidebar.sidebar-open .nav-active:hover,
+.sidebar.sidebar-open .nav-active,
+.sidebar.sidebar-open .nav-active * {
+  color: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.92) !important;
+  background: #ffffff !important;
+}
+
+.sidebar .nav-item.nav-active span,
+.sidebar .nav-item.nav-active svg {
+  color: #111111 !important;
 }
 
 .primary-button,
