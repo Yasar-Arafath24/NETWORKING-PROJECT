@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, Shield, UserRound } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./components/Dashboard";
+import LandingPage from "./components/LandingPage";
 import {
   authenticate,
   authenticateWithGoogle,
@@ -14,6 +15,36 @@ import {
   verifyEmail,
   verifyPasswordResetOtp,
 } from "./services/api";
+
+const protectedPaths = [
+  "/dashboard",
+  "/website-integration",
+  "/websites",
+  "/my-websites",
+  "/traffic-monitoring",
+  "/pcap-analysis",
+  "/alerts",
+  "/ai-detection",
+  "/analysis-history",
+  "/settings",
+];
+
+const recoveryPaths = [
+  "/login",
+  "/register",
+  "/verify-email",
+  "/forgot-password",
+  "/verify-reset-otp",
+  "/reset-password",
+];
+
+function getPostAuthPath(locationState) {
+  const requestedPath = locationState?.from?.pathname || locationState?.returnTo;
+  const normalizedPath = typeof requestedPath === "string"
+    ? requestedPath.replace(/\/+$/, "") || "/"
+    : "";
+  return protectedPaths.includes(normalizedPath) ? normalizedPath : "/dashboard";
+}
 
 function loadGoogleIdentity() {
   if (window.google?.accounts?.id) return Promise.resolve(window.google);
@@ -44,12 +75,15 @@ function isValidEmail(value) {
 function AccountGate({ onAuthenticated, onPasswordReset }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [registering, setRegistering] = useState(false);
+  const pathname = location.pathname.replace(/\/+$/, "") || "/";
+  const registering = pathname === "/register";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(
+    pathname === "/verify-email" ? location.state?.verificationEmail || "" : ""
+  );
   const [password, setPassword] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -107,7 +141,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
               const result = await authenticateWithGoogle(credentialResponse.credential, googleNonceRef.current);
               if (active) {
                 onAuthenticated(result.user);
-                navigate("/dashboard", { replace: true });
+                navigate(getPostAuthPath(location.state), { replace: true });
               }
             } catch (authError) {
               if (active) setGoogleError(authError.message || "Google sign-in failed. Please try again.");
@@ -128,7 +162,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
       if (window.google?.accounts?.id) window.google.accounts.id.cancel();
       buttonContainer.replaceChildren();
     };
-  }, [googleConfig.client_id, navigate, onAuthenticated]);
+  }, [googleConfig.client_id, location.state, navigate, onAuthenticated]);
 
   useEffect(() => {
     if (resendSeconds <= 0) return undefined;
@@ -149,7 +183,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
       setNotice(result.message || "If an active account matches that email, a password reset code will be sent.");
       setResendSeconds(60);
       setResetCode("");
-      navigate("/verify-reset-otp");
+      navigate("/verify-reset-otp", { state: location.state });
     } catch (requestError) {
       setError(requestError.message || "Unable to process the password reset request.");
     } finally {
@@ -166,7 +200,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     try {
       await verifyPasswordResetOtp(email.trim().toLowerCase(), resetCode);
       setResetCode("");
-      navigate("/reset-password");
+      navigate("/reset-password", { state: location.state });
     } catch (requestError) {
       setError(requestError.message || "The reset code is invalid or expired.");
     } finally {
@@ -206,16 +240,20 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
       const result = await authenticate(registering ? "register" : "login", payload);
       if (registering && result.verification_required) {
         setEmail(payload.email);
-        navigate("/verify-email");
+        navigate("/verify-email", {
+          state: { ...location.state, verificationEmail: payload.email },
+        });
         setNotice("Verification code sent. Check your inbox.");
         return;
       }
       onAuthenticated(result.user);
-      navigate("/dashboard", { replace: true });
+      navigate(getPostAuthPath(location.state), { replace: true });
     } catch (err) {
       if (err.status === 403 && /verify your email/i.test(err.message)) {
         setEmail(payload.email);
-        navigate("/verify-email");
+        navigate("/verify-email", {
+          state: { ...location.state, verificationEmail: payload.email },
+        });
         setNotice("A verification code has been sent. Enter it to continue.");
         return;
       }
@@ -234,7 +272,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
       const result = await verifyEmail(email.trim().toLowerCase(), verificationCode);
       setVerificationCode("");
       onAuthenticated(result.user);
-      navigate("/dashboard", { replace: true });
+      navigate(getPostAuthPath(location.state), { replace: true });
     } catch (verificationError) {
       setError(verificationError.message || "The verification code is invalid or expired.");
     } finally {
@@ -257,7 +295,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     }
   }
 
-  if (location.pathname === "/verify-email") {
+  if (pathname === "/verify-email") {
     return (
       <main className="account-gate">
         <form className="account-card" onSubmit={submitEmailVerification}>
@@ -265,20 +303,21 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
           <p className="account-eyebrow">VERIFY YOUR EMAIL</p>
           <h1>Enter verification code</h1>
           <p className="account-copy">Enter the six-digit code sent to {email || "your email"}. It expires in five minutes.</p>
+          {!emailValid && <label>Email<input name="verification-email" type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); setError(""); }} required maxLength={254} /></label>}
           <label>One-time code<input className="verification-code-input" name="verification-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(event) => { setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }} required /></label>
           {error && <p className="account-error" role="alert">{error}</p>}
           {notice && <p className="account-success" role="status">{notice}</p>}
           <button className="account-primary-button" disabled={!emailValid || !/^\d{6}$/.test(verificationCode) || busy}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Verifying…</> : <>Verify email <ArrowRight size={17} /></>}</button>
           <div className="account-verify-actions">
             <button type="button" className="account-link-button" disabled={busy || resendSeconds > 0 || !emailValid} onClick={resendVerificationCode}>{resendSeconds > 0 ? `Resend code in ${resendSeconds}s` : "Resend code"}</button>
-            <button type="button" className="account-link-button" onClick={() => navigate("/login")}><ArrowLeft size={15} /> Back to login</button>
+            <button type="button" className="account-link-button" onClick={() => navigate("/login", { state: location.state })}><ArrowLeft size={15} /> Back to login</button>
           </div>
         </form>
       </main>
     );
   }
 
-  if (location.pathname === "/forgot-password") {
+  if (pathname === "/forgot-password") {
     return (
       <main className="account-gate">
         <form className="account-card" onSubmit={sendResetCode}>
@@ -290,13 +329,13 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
           {error && <p className="account-error" role="alert">{error}</p>}
           {notice && <p className="account-success" role="status">{notice}</p>}
           <button className="account-primary-button" disabled={!emailValid || busy}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Sending…</> : <>Send OTP <ArrowRight size={17} /></>}</button>
-          <p className="account-switch"><button type="button" onClick={() => navigate("/login")}>Back to Login</button></p>
+          <p className="account-switch"><button type="button" onClick={() => navigate("/login", { state: location.state })}>Back to Login</button></p>
         </form>
       </main>
     );
   }
 
-  if (location.pathname === "/verify-reset-otp") {
+  if (pathname === "/verify-reset-otp") {
     return (
       <main className="account-gate">
         <form className="account-card" onSubmit={verifyResetCode}>
@@ -311,14 +350,14 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
           <button className="account-primary-button" disabled={!emailValid || !/^\d{6}$/.test(resetCode) || busy}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Verifying…</> : <>Verify OTP <ArrowRight size={17} /></>}</button>
           <div className="account-verify-actions">
             <button type="button" className="account-link-button" disabled={busy || resendSeconds > 0 || !emailValid} onClick={sendResetCode}>{resendSeconds > 0 ? `Resend code in ${resendSeconds}s` : "Resend OTP"}</button>
-            <button type="button" className="account-link-button" onClick={() => navigate("/forgot-password")}><ArrowLeft size={15} /> Back</button>
+            <button type="button" className="account-link-button" onClick={() => navigate("/forgot-password", { state: location.state })}><ArrowLeft size={15} /> Back</button>
           </div>
         </form>
       </main>
     );
   }
 
-  if (location.pathname === "/reset-password") {
+  if (pathname === "/reset-password") {
     return (
       <main className="account-gate">
         <form className="account-card" onSubmit={submitNewPassword}>
@@ -334,7 +373,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
           {error && <p className="account-error" role="alert">{error}</p>}
           {notice && <p className="account-success" role="status">{notice}</p>}
           {!resetComplete && <button className="account-primary-button" disabled={busy || newPassword.length < 8 || !/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/\d/.test(newPassword) || newPassword !== confirmPassword}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Updating…</> : <>Reset password <ArrowRight size={17} /></>}</button>}
-          {resetComplete && <button type="button" className="account-primary-button" onClick={() => navigate("/login", { replace: true })}>Return to Login <ArrowRight size={17} /></button>}
+          {resetComplete && <button type="button" className="account-primary-button" onClick={() => navigate("/login", { replace: true, state: location.state })}>Return to Login <ArrowRight size={17} /></button>}
         </form>
       </main>
     );
@@ -344,7 +383,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
     <main className="account-gate">
       <form className="account-card" onSubmit={submit}>
         <div className="account-brand"><div className="account-mark"><Shield size={22} /></div><div><strong>NetSentry AI</strong><span>Network intelligence workspace</span></div></div>
-        <p className="account-eyebrow">SECURE WORKSPACE ACCESS</p>
+        <p className="account-eyebrow">{registering ? "CREATE YOUR SECURE WORKSPACE" : "SECURE WORKSPACE ACCESS"}</p>
         <h1>{registering ? "Create your account" : "Welcome back"}</h1>
         <p className="account-copy">{registering
           ? "Set up your account to save your network analyses and alerts."
@@ -373,6 +412,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
         </label>
         <label>Password<span className="account-password-field account-input-field"><LockKeyhole size={17} aria-hidden="true" /><input name="password" type={passwordVisible ? "text" : "password"} autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => { setPassword(event.target.value); setError(""); }} minLength={registering ? 6 : 1} required /><button type="button" className="account-password-toggle" aria-label={passwordVisible ? "Hide password" : "Show password"} onClick={() => setPasswordVisible((visible) => !visible)}>{passwordVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
         {registering && <small className="account-password-help">At least 6 characters, including uppercase, lowercase, and a number.</small>}
+        {!registering && <p className="account-forgot-link"><button type="button" className="account-link-button" onClick={() => { setError(""); setNotice(""); navigate("/forgot-password", { state: location.state }); }}>Forgot password?</button></p>}
         {error && <p className="account-error" role="alert">{error}</p>}
         {notice && <p className="account-success" role="status">{notice}</p>}
         <button className="account-primary-button" disabled={!canSubmit}>{busy ? <><LoaderCircle size={17} className="account-spin" /> Please wait…</> : <>{registering ? "Create account" : "Sign in"}<ArrowRight size={17} /></>}</button>
@@ -383,7 +423,7 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
         </div></>}
         {googleError && <p className="account-error" role="alert">{googleError}</p>}
         <p className="account-switch">{registering ? "Already have an account?" : "New to NetSentry?"}{" "}
-          <button type="button" disabled={isBusy} onClick={() => { setRegistering(!registering); setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); }}>
+          <button type="button" disabled={isBusy} onClick={() => { setError(""); setNotice(""); setGoogleError(""); setEmailTouched(false); setPassword(""); navigate(registering ? "/login" : "/register", { state: location.state }); }}>
             {registering ? "Sign in" : "Create an account"}
           </button>
         </p>
@@ -392,9 +432,30 @@ function AccountGate({ onAuthenticated, onPasswordReset }) {
   );
 }
 
-export default function App() {
+function NotFoundPage({ authenticated }) {
   const navigate = useNavigate();
+
+  return (
+    <main className="not-found-page">
+      <div>
+        <p className="eyebrow">404 · PAGE NOT FOUND</p>
+        <h1>This page doesn't exist</h1>
+        <p>Check the address or return to your NetSentry workspace.</p>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={() => navigate(authenticated ? "/dashboard" : "/login")}
+        >
+          {authenticated ? "Go to Dashboard" : "Go to Sign In"}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+export default function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [startupComplete, setStartupComplete] = useState(false);
@@ -408,11 +469,9 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  useEffect(() => {
-    if (location.pathname === "/") navigate("/login", { replace: true });
-  }, [location.pathname, navigate]);
+  const pathname = location.pathname.replace(/\/+$/, "") || "/";
 
-  if (!authChecked || !startupComplete) {
+  if (pathname !== "/" && (!authChecked || !startupComplete)) {
     return (
       <main className="startup-loading" role="status" aria-live="polite" aria-label="Loading NetSentry">
         <div className="startup-mark" aria-hidden="true">
@@ -430,11 +489,41 @@ export default function App() {
       </main>
     );
   }
-  const recoveryRoute = ["/login", "/verify-email", "/forgot-password", "/verify-reset-otp", "/reset-password"].includes(location.pathname);
-  if (!user || recoveryRoute) return <AccountGate onAuthenticated={setUser} onPasswordReset={() => setUser(null)} />;
+  const recoveryRoute = recoveryPaths.includes(pathname);
+  const knownRoute = pathname === "/"
+    || recoveryRoute
+    || protectedPaths.includes(pathname)
+    || pathname === "/connect-website";
+
+  if (!knownRoute) return <NotFoundPage authenticated={Boolean(user)} />;
+  const protectedRoute = protectedPaths.includes(pathname) || pathname === "/connect-website";
+  if (!user && protectedRoute) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  if (recoveryRoute) {
+    if (user && (pathname === "/login" || pathname === "/register")) {
+      return <Navigate to={getPostAuthPath(location.state)} replace />;
+    }
+    return <AccountGate onAuthenticated={setUser} onPasswordReset={() => setUser(null)} />;
+  }
+
   return (
-    <>
-      <Dashboard user={user} onSignOut={async () => { await signOut(); setUser(null); }} />
-    </>
+    <Routes>
+      <Route path="/" element={<LandingPage authenticated={Boolean(user)} />} />
+      {protectedPaths.filter((path) => path !== "/websites").map((path) => (
+        <Route
+          key={path}
+          path={path}
+          element={<Dashboard user={user} onSignOut={async () => {
+            await signOut();
+            setUser(null);
+            navigate("/", { replace: true });
+          }} />}
+        />
+      ))}
+      <Route path="/websites" element={<Navigate to="/my-websites" replace />} />
+      <Route path="/connect-website" element={<Navigate to="/website-integration" replace />} />
+      <Route path="*" element={<NotFoundPage authenticated />} />
+    </Routes>
   );
 }

@@ -71,9 +71,8 @@ const preferenceNavigation = [
 
 const pagePaths = {
   Overview: "/dashboard",
-  "Connect Website": "/connect-website",
-  "My Websites": "/website-integration",
-  "Website Integrations": "/website-integration",
+  "Connect Website": "/website-integration",
+  "My Websites": "/my-websites",
   "Traffic Monitoring": "/traffic-monitoring",
   "PCAP Analysis": "/pcap-analysis",
   "Security Alerts": "/alerts",
@@ -385,7 +384,7 @@ function SeverityBadge({ severity = "medium", children }) {
 export default function Dashboard({ user = null, onSignOut }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const activePage = pathPages[location.pathname] || "Overview";
+  const activePage = pathPages[location.pathname.replace(/\/+$/, "") || "/"] || "Overview";
   const [uploadingPcap, setUploadingPcap] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(true);
@@ -524,12 +523,6 @@ export default function Dashboard({ user = null, onSignOut }) {
       window.clearInterval(timer);
     };
   }, []);
-
-  useEffect(() => {
-    if (!pathPages[location.pathname]) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [location.pathname, navigate]);
 
   useEffect(() => {
     function handleShortcut(event) {
@@ -1677,6 +1670,14 @@ export default function Dashboard({ user = null, onSignOut }) {
       <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
         <button
           type="button"
+          className="sidebar-close-button"
+          aria-label="Close navigation menu"
+          onClick={() => setMobileMenuOpen(false)}
+        >
+          <X size={20} />
+        </button>
+        <button
+          type="button"
           className="brand"
           onClick={() => navigateTo("Overview")}
           aria-label="Go to NetSentry overview"
@@ -1745,7 +1746,8 @@ export default function Dashboard({ user = null, onSignOut }) {
           <button
             type="button"
             className="mobile-menu-button"
-            aria-label="Toggle navigation"
+            aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileMenuOpen}
             onClick={() => setMobileMenuOpen((open) => !open)}
           >
             {mobileMenuOpen ? <X size={21} /> : <Menu size={21} />}
@@ -2384,7 +2386,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           margin-top: 24px;
         }
 
-        @media (max-width: 900px) {
+        @media (max-width: 767px) {
           .mobile-menu-button {
             display: inline-flex;
             align-items: center;
@@ -2500,7 +2502,7 @@ export default function Dashboard({ user = null, onSignOut }) {
           }
 
           .metrics-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1fr);
           }
 
           .table-scroll {

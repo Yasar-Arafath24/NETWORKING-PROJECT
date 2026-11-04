@@ -594,8 +594,8 @@
 }
 
 .sidebar {
-  width: 248px;
-  min-width: 248px;
+  width: 240px;
+  min-width: 240px;
   border-right-color: rgba(60, 60, 67, 0.09);
   background: rgba(249, 249, 251, 0.94);
   backdrop-filter: blur(18px);
@@ -924,8 +924,8 @@
 /* Sidebar */
 
 .sidebar {
-  width: 250px;
-  min-width: 250px;
+  width: 240px;
+  min-width: 240px;
   min-height: 100vh;
   background: #fff;
   border-right: 1px solid #e2e8f0;
@@ -2476,7 +2476,7 @@
   flex-shrink: 0;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .app-shell {
     position: relative;
     overflow-x: hidden;
@@ -3096,11 +3096,11 @@ body,
   background: #1d1d1d !important;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 767px) {
   .sidebar {
     box-sizing: border-box;
-    width: min(290px, 85vw) !important;
-    min-width: min(290px, 85vw) !important;
+    width: min(280px, 85vw) !important;
+    min-width: min(280px, 85vw) !important;
     padding: 18px 12px 16px !important;
   }
 
@@ -3238,4 +3238,334 @@ body,
   border-color: #111111 !important;
   color: #111111 !important;
   background: #f2f2f2 !important;
+}
+
+/* Keep the dashboard layout aligned with the sidebar drawer breakpoints. */
+.app-shell {
+  width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  top: 0;
+  z-index: 40;
+  flex: 0 0 240px;
+  width: 240px;
+  min-width: 240px;
+  height: 100vh;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+.main-content {
+  flex: 1 1 0;
+  margin-left: 240px;
+  width: calc(100% - 240px);
+  max-width: calc(100% - 240px);
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.dashboard-content,
+.dashboard-content > *,
+.metric-card,
+.panel {
+  min-width: 0;
+}
+
+.dashboard-content {
+  width: 100%;
+}
+
+.metrics-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.content-grid {
+  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+}
+
+.chart-container,
+.chart-container > *,
+.recharts-responsive-container {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-scroll,
+.website-event-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
+.sidebar-close-button {
+  display: none;
+}
+
+.not-found-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.not-found-page > div {
+  max-width: 480px;
+}
+
+.not-found-page h1 {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 40px);
+}
+
+.not-found-page p:not(.eyebrow) {
+  margin: 12px 0 24px;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0;
+    flex-basis: 240px !important;
+    width: 240px !important;
+    min-width: 240px !important;
+    height: 100vh;
+    transform: none !important;
+    visibility: visible !important;
+  }
+
+  .main-content {
+    margin-left: 240px;
+    width: calc(100% - 240px);
+    max-width: calc(100% - 240px);
+  }
+
+  .topbar {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+
+  .dashboard-search-wrapper {
+    width: min(190px, 25vw);
+  }
+
+  .dashboard-content {
+    padding: 24px 20px 20px;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .historical-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .content-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.account-gate {
+  color: #172338;
+  background:
+    radial-gradient(ellipse at 18% 15%, rgba(59, 130, 246, .055), transparent 38%),
+    radial-gradient(ellipse at 82% 82%, rgba(16, 185, 129, .045), transparent 38%),
+    #f6f8fb !important;
+}
+
+.account-gate .account-card {
+  border-color: #dce4ee !important;
+  border-radius: 16px !important;
+  color: #172338;
+  background: #ffffff !important;
+  box-shadow: 0 18px 48px rgba(18, 38, 63, .1) !important;
+}
+
+.account-gate .account-brand strong,
+.account-gate .account-card h1 {
+  color: #142033;
+}
+
+.account-gate .account-brand span,
+.account-gate .account-copy,
+.account-gate .account-switch,
+.account-gate .account-card small {
+  color: #526176;
+}
+
+.account-gate .account-eyebrow,
+.account-gate .account-switch button,
+.account-gate .account-link-button {
+  color: #087c5a;
+}
+
+.account-gate .account-card label {
+  color: #26364c;
+}
+
+.account-gate .account-card input {
+  border-color: #cbd5e1;
+  color: #172338;
+  background: #ffffff;
+}
+
+.account-gate .account-card input::placeholder {
+  color: #64748b;
+}
+
+.account-gate .account-card input:focus {
+  border-color: #07875f;
+  box-shadow: 0 0 0 3px rgba(7, 135, 95, .12);
+}
+
+.account-gate .account-input-field > svg,
+.account-gate .account-password-toggle {
+  color: #64748b;
+}
+
+.account-gate .account-password-toggle:hover {
+  color: #06684b;
+  background: #eaf7f1;
+}
+
+.account-gate .account-primary-button {
+  border-color: #087c5a !important;
+  color: #ffffff !important;
+  background: #087c5a !important;
+}
+
+.account-gate .account-primary-button:hover:not(:disabled) {
+  border-color: #06684b !important;
+  background: #06684b !important;
+}
+
+.account-gate .google-divider {
+  color: #64748b;
+}
+
+.account-gate .google-divider::before,
+.account-gate .google-divider::after {
+  background: #e2e8f0;
+}
+
+.account-gate .account-success {
+  border-color: #b9e5d2;
+  color: #145c43;
+  background: #effaf4;
+}
+
+@media (max-width: 480px) {
+  .account-gate .account-card {
+    border-radius: 14px !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed !important;
+    inset: 0 auto 0 0;
+    z-index: 1100;
+    display: flex;
+    width: min(280px, 85vw) !important;
+    min-width: min(280px, 85vw) !important;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    overflow-y: auto;
+    transform: translateX(-105%);
+    visibility: hidden;
+    transition: transform 220ms ease, visibility 220ms ease;
+  }
+
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1090;
+    display: block;
+    border: 0;
+    background: rgb(0 0 0 / 48%);
+  }
+
+  .sidebar-close-button {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    place-items: center;
+    align-self: flex-end;
+    margin: -8px 0 12px;
+    border: 1px solid #343434;
+    border-radius: 9px;
+    color: #ffffff;
+    background: #1d1d1d;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+  }
+
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .topbar {
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  .breadcrumb {
+    display: none;
+  }
+
+  .topbar-actions {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .dashboard-search-wrapper {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .search-box {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .dashboard-content {
+    padding: 18px 14px;
+  }
+
+  .metrics-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .content-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

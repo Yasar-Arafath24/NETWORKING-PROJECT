@@ -465,6 +465,7 @@ export default function CustomerWebsiteIntegrations({ initialView = "websites", 
               </div>
               <p>{site.description || "No description provided."}</p>
               <div className="integration-site-meta">
+                <span>Website ID <b>{site.id}</b></span>
                 <span>Last heartbeat <b>{prettyDate(site.collector_last_seen_at)}</b></span>
                 <span>Integration <b>Customer-side collector</b></span>
                 <span>Platform <b>{PLATFORMS.find(([id]) => id === site.platform)?.[1] || site.platform}</b></span>
