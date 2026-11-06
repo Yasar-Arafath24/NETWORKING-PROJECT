@@ -333,6 +333,132 @@
   font-size: 12px;
 }
 
+.route-transition {
+ position: fixed;
+ inset: 0;
+ z-index: 10000;
+ display: grid;
+ place-items: center;
+ overflow: hidden;
+ background:
+   radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.98) 0, rgba(250, 250, 252, 0.98) 34%, rgba(244, 245, 248, 0.99) 100%);
+ backdrop-filter: blur(28px) saturate(1.08);
+ animation: route-transition-enter 320ms cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.route-transition-glow {
+ position: absolute;
+ width: min(420px, 78vw);
+ aspect-ratio: 1;
+ border-radius: 50%;
+ background: rgba(255, 255, 255, 0.82);
+ box-shadow: 0 0 100px rgba(255, 255, 255, 0.95);
+ filter: blur(18px);
+ animation: route-glow-breathe 1.8s ease-in-out infinite;
+}
+
+.route-transition-content {
+ position: relative;
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ animation: route-content-enter 720ms cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.route-transition-mark {
+ position: relative;
+ width: 72px;
+ height: 72px;
+ display: grid;
+ place-items: center;
+ color: #111111;
+ border: 1px solid rgba(15, 23, 42, 0.055);
+ border-radius: 23px;
+ background: rgba(255, 255, 255, 0.92);
+ box-shadow: 0 24px 65px rgba(15, 23, 42, 0.10), 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.route-transition-ring {
+ position: absolute;
+ pointer-events: none;
+ border-radius: inherit;
+ border: 1px solid rgba(17, 17, 17, 0.12);
+}
+
+.route-transition-ring-outer {
+ inset: -10px;
+ animation: route-ring-pulse 1.5s ease-out infinite;
+}
+
+.route-transition-ring-inner {
+ inset: -4px;
+ opacity: 0;
+ animation: route-ring-pulse 1.5s .45s ease-out infinite;
+}
+
+.route-transition-brand {
+ margin-top: 25px;
+ color: #111111;
+}
+
+.route-transition-brand strong {
+ font-size: 20px;
+ font-weight: 650;
+ letter-spacing: -.7px;
+}
+
+.route-transition-brand strong span {
+ margin-left: 2px;
+ color: #5e6470;
+ font-size: 11px;
+ font-weight: 700;
+ letter-spacing: 1px;
+ vertical-align: super;
+}
+
+.route-transition-pulse {
+ width: 92px;
+ height: 2px;
+ margin-top: 22px;
+ overflow: hidden;
+ border-radius: 99px;
+ background: rgba(17, 17, 17, 0.07);
+}
+
+.route-transition-pulse span {
+ display: block;
+ width: 38%;
+ height: 100%;
+ border-radius: inherit;
+ background: linear-gradient(90deg, transparent, #171717 35%, #171717 65%, transparent);
+ animation: route-progress-pulse 1.15s cubic-bezier(.65, 0, .35, 1) infinite;
+}
+
+@keyframes route-transition-enter {
+ from { opacity: 0; }
+ to { opacity: 1; }
+}
+
+@keyframes route-content-enter {
+ from { opacity: 0; transform: translateY(12px) scale(.97); filter: blur(7px); }
+ to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes route-glow-breathe {
+ 0%, 100% { opacity: .5; transform: scale(.94); }
+ 50% { opacity: .85; transform: scale(1.06); }
+}
+
+@keyframes route-ring-pulse {
+ 0% { opacity: .7; transform: scale(.94); }
+ 72%, 100% { opacity: 0; transform: scale(1.16); }
+}
+
+@keyframes route-progress-pulse {
+ 0% { transform: translateX(-120%); }
+ 100% { transform: translateX(370%); }
+}
+
 @keyframes startup-progress {
   0% { transform: translateX(-110%); }
   55% { transform: translateX(145%); }
@@ -365,7 +491,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .startup-mark-ring,
-  .startup-progress span {
+  .startup-progress span,
+  .route-transition,
+  .route-transition-content,
+  .route-transition-glow,
+  .route-transition-ring,
+  .route-transition-pulse span {
     animation: none;
   }
 
@@ -3624,6 +3755,121 @@ body,
 @media (max-width: 480px) {
   .account-gate .account-card {
     border-radius: 14px !important;
+  }
+}
+
+/* Keep the authentication card compact without creating a nested page scrollbar. */
+.account-gate {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.account-gate .account-card {
+  width: min(400px, calc(100vw - 32px));
+  max-height: none;
+  overflow-y: visible;
+  padding: 30px 32px 28px;
+}
+
+.account-gate .account-eyebrow {
+  margin-top: 18px;
+}
+
+.account-gate .account-copy {
+  margin-bottom: 18px;
+}
+
+.account-gate .account-card label {
+  margin: 11px 0;
+}
+
+.account-gate .account-field-error {
+  min-height: 12px;
+}
+
+.account-gate .account-primary-button {
+  margin-top: 14px;
+}
+
+.account-gate .account-switch {
+  margin-top: 16px;
+}
+
+@media (max-width: 480px) {
+  .account-gate {
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+
+  .account-gate .account-card {
+    width: 100%;
+    padding: 24px 20px 22px;
+  }
+}
+
+@media (max-height: 720px) {
+  .account-gate {
+    overflow-y: auto;
+    align-items: start;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .account-gate .account-card {
+    padding-top: 22px;
+    padding-bottom: 20px;
+  }
+
+  .account-gate .account-mark {
+    width: 40px;
+    height: 40px;
+  }
+
+  .account-gate .account-eyebrow {
+    margin-top: 12px;
+  }
+
+  .account-gate .account-card h1 {
+    font-size: 25px;
+  }
+
+  .account-gate .account-copy {
+    margin-top: 6px;
+    margin-bottom: 12px;
+    line-height: 1.45;
+  }
+
+  .account-gate .account-card label {
+    margin: 8px 0;
+}
+
+  .account-gate .account-card input {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .account-gate .account-forgot-link {
+    margin-bottom: 0;
+  }
+
+  .account-gate .account-primary-button {
+    min-height: 42px;
+    margin-top: 10px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .account-gate .google-divider {
+    margin-top: 7px;
+  }
+
+  .account-gate .google-button-slot {
+    min-height: 40px;
+  }
+
+  .account-gate .account-switch {
+    margin-top: 10px;
   }
 }
 

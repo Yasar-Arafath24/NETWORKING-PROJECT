@@ -459,6 +459,8 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [startupComplete, setStartupComplete] = useState(false);
+  const previousPathRef = useRef(location.pathname.replace(/\/+$/, "") || "/");
+  const [routeTransitioning, setRouteTransitioning] = useState(false);
 
   useEffect(() => {
     getCurrentUser().then((result) => setUser(result.user)).catch(() => {}).finally(() => setAuthChecked(true));
@@ -469,6 +471,17 @@ export default function App() {
     const timer = window.setTimeout(() => setStartupComplete(true), duration);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    const currentPath = location.pathname.replace(/\/+$/, "") || "/";
+
+    if (!startupComplete || previousPathRef.current === currentPath) return;
+
+    previousPathRef.current = currentPath;
+    setRouteTransitioning(true);
+    const timer = window.setTimeout(() => setRouteTransitioning(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname, startupComplete]);
 
   const pathname = location.pathname.replace(/\/+$/, "") || "/";
 
@@ -526,22 +539,42 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/" element={<LandingPage authenticated={Boolean(user)} />} />
-      {protectedPaths.filter((path) => path !== "/websites").map((path) => (
-        <Route
-          key={path}
-          path={path}
-          element={<Dashboard user={user} onSignOut={async () => {
-            await signOut();
-            setUser(null);
-            navigate("/", { replace: true });
-          }} />}
-        />
-      ))}
-      <Route path="/websites" element={<Navigate to="/my-websites" replace />} />
-      <Route path="/connect-website" element={<Navigate to="/website-integration" replace />} />
-      <Route path="*" element={<NotFoundPage authenticated />} />
-    </Routes>
+    <>
+      {routeTransitioning && (
+        <main className="route-transition" role="status" aria-live="polite" aria-label="Loading page">
+          <div className="route-transition-glow" aria-hidden="true" />
+          <div className="route-transition-content">
+            <div className="route-transition-mark" aria-hidden="true">
+              <span className="route-transition-ring route-transition-ring-outer" />
+              <span className="route-transition-ring route-transition-ring-inner" />
+              <Shield size={27} strokeWidth={1.65} />
+            </div>
+            <div className="route-transition-brand">
+              <strong>NetSentry <span>AI</span></strong>
+            </div>
+            <div className="route-transition-pulse" aria-hidden="true">
+              <span />
+            </div>
+          </div>
+        </main>
+      )}
+      <Routes>
+        <Route path="/" element={<LandingPage authenticated={Boolean(user)} />} />
+        {protectedPaths.filter((path) => path !== "/websites").map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={<Dashboard user={user} onSignOut={async () => {
+              await signOut();
+              setUser(null);
+              navigate("/", { replace: true });
+            }} />}
+          />
+        ))}
+        <Route path="/websites" element={<Navigate to="/my-websites" replace />} />
+        <Route path="/connect-website" element={<Navigate to="/website-integration" replace />} />
+        <Route path="*" element={<NotFoundPage authenticated />} />
+      </Routes>
+    </>
   );
 }
